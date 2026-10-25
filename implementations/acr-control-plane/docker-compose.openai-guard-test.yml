@@ -1,0 +1,18 @@
+# CI isolation only: same gateway, migrations and policies as the quickstart.
+# Requires Compose >=2.24.4. No extra executor, host mounts, or privileges.
+services:
+  postgres:
+    ports: !reset []
+  redis:
+    ports: !reset []
+  opa:
+    ports: !reset []
+  acr-killswitch:
+    ports: !reset []
+  acr-gateway:
+    ports: !override ["127.0.0.1:8000:8000"]
+    environment:
+      EXECUTE_ALLOWED_ACTIONS: "false"
+      TOOL_EXECUTOR_MAP_JSON: "{}"
+      WEBHOOK_URL: ""
+      OTEL_EXPORTER_OTLP_ENDPOINT: ""
