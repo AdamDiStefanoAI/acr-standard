@@ -9,7 +9,7 @@ from typing import Any
 
 from acr.gateway.models import EvaluateResponse, IntentRequest
 from acr.sdk.client import ACRAgentSession, AsyncACRAgentSession
-from acr.sdk.errors import ACRDeniedError, ACREscalatedError
+from acr.sdk.errors import ACRDeniedError, ACREscalatedError, ACRSDKError
 
 
 def _bind_arguments(func: Callable[..., Any], *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -27,9 +27,16 @@ def _coerce_intent(intent: IntentRequest | dict[str, Any] | None) -> IntentReque
 def _resolve_effective_parameters(
     original_parameters: dict[str, Any],
     response: EvaluateResponse,
+    tool_name: str,
 ) -> dict[str, Any]:
     if response.modified_action is None:
+        if response.decision == "modify":
+            raise ACRSDKError("MODIFY response requires an explicit modified action")
         return original_parameters
+    if response.modified_action.tool_name != tool_name:
+        raise ACRSDKError("Modified action does not match the guarded tool")
+    if "parameters" not in response.modified_action.model_fields_set:
+        raise ACRSDKError("Modified action requires explicit parameters")
     return dict(response.modified_action.parameters)
 
 
@@ -72,9 +79,11 @@ def guard_tool(
             intent=intent,
         )
         _handle_blocking_decision(response)
+        effective_parameters = _resolve_effective_parameters(
+            parameters, response, resolved_tool_name
+        )
         if response.execution_result is not None and not execute_locally_on_allow:
             return response.execution_result
-        effective_parameters = _resolve_effective_parameters(parameters, response)
         return func(**effective_parameters)
 
     return wrapped
@@ -107,9 +116,11 @@ def guard_async_tool(
             intent=intent,
         )
         _handle_blocking_decision(response)
+        effective_parameters = _resolve_effective_parameters(
+            parameters, response, resolved_tool_name
+        )
         if response.execution_result is not None and not execute_locally_on_allow:
             return response.execution_result
-        effective_parameters = _resolve_effective_parameters(parameters, response)
         result = func(**effective_parameters)
         if inspect.isawaitable(result):
             return await result

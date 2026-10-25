@@ -46,7 +46,9 @@ def _parse_model(response: httpx.Response, model_type):
     return model_type.model_validate(response.json())
 
 
-def _parse_evaluate_response(response: httpx.Response) -> EvaluateResponse:
+def _parse_evaluate_response(
+    response: httpx.Response, *, expected_tool_name: str
+) -> EvaluateResponse:
     payload = _parse_json_response(response)
     if response.status_code not in _EVALUATE_STATUS_CODES:
         raise ACRHTTPError(
@@ -60,7 +62,34 @@ def _parse_evaluate_response(response: httpx.Response) -> EvaluateResponse:
             message="Evaluate response body was not JSON",
             body=payload,
         )
-    return EvaluateResponse.model_validate(payload)
+    result = EvaluateResponse.model_validate(payload)
+    # Only a successful evaluation may authorize execution. Preserve structured
+    # deny/escalate results on supported failure statuses, but never let a
+    # contradictory response body turn an error or pending status into allow.
+    if response.status_code != 200 and result.is_allowed:
+        raise ACRHTTPError(
+            status_code=response.status_code,
+            message="Non-success evaluate response cannot authorize execution",
+            body=payload,
+        )
+    # Validate transformation completeness and action identity for raw SDK
+    # callers too, not only callers using the optional local guard wrappers.
+    modified = result.modified_action
+    if result.decision == "modify" and modified is None:
+        raise ACRHTTPError(
+            status_code=response.status_code,
+            message="MODIFY response requires an explicit modified action",
+            body=payload,
+        )
+    if modified is not None and (
+        modified.tool_name != expected_tool_name or "parameters" not in modified.model_fields_set
+    ):
+        raise ACRHTTPError(
+            status_code=response.status_code,
+            message="Modified action must match the requested tool and include explicit parameters",
+            body=payload,
+        )
+    return result
 
 
 class ACRClient:
@@ -171,7 +200,7 @@ class ACRClient:
             headers=self._agent_headers(access_token),
             json=_jsonable(request),
         )
-        return _parse_evaluate_response(response)
+        return _parse_evaluate_response(response, expected_tool_name=request.action.tool_name)
 
     def evaluate_action(
         self,
@@ -307,7 +336,7 @@ class AsyncACRClient:
             headers=self._agent_headers(access_token),
             json=_jsonable(request),
         )
-        return _parse_evaluate_response(response)
+        return _parse_evaluate_response(response, expected_tool_name=request.action.tool_name)
 
     async def evaluate_action(
         self,

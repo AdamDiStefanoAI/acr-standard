@@ -37,15 +37,15 @@ dependencies = [
     "passlib[bcrypt]>=1.7.4,<2.0.0",
 
     # OpenTelemetry — core (stable releases)
-    "opentelemetry-api>=1.29.0,<2.0.0",
-    "opentelemetry-sdk>=1.29.0,<2.0.0",
-    "opentelemetry-exporter-otlp-proto-http>=1.29.0,<2.0.0",
+    "opentelemetry-api>=1.45.1,<2.0.0",
+    "opentelemetry-sdk>=1.45.1,<2.0.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.1,<2.0.0",
 
     # OpenTelemetry — instrumentation packages track the core version family.
-    # Pinned to <0.60b0 to prevent unreviewed major jumps.
-    "opentelemetry-instrumentation-fastapi==0.59b0",
-    "opentelemetry-instrumentation-httpx==0.59b0",
-    "opentelemetry-instrumentation-sqlalchemy==0.59b0",
+    # This reviewed family permits the CVE-2026-114603 fix in API 1.45.1.
+    "opentelemetry-instrumentation-fastapi==0.66b1",
+    "opentelemetry-instrumentation-httpx==0.66b1",
+    "opentelemetry-instrumentation-sqlalchemy==0.66b1",
 
     # Circuit breakers
     "aiobreaker>=1.1",
