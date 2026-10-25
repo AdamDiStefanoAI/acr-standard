@@ -56,6 +56,14 @@ result = session.evaluate_action(
 
 The Python SDK also includes a real adapter layer for LangGraph/LangChain-style tools.
 
+**Optional dependency limitation (2026-10-25):** the `integrations` extra and the
+legacy LangGraph example dependency family are not audit-clean. Do not install
+those optional dependencies for production evaluation pending a separately reviewed
+migration. The SDK/base-package security fix does not remediate them; the base
+`pip install acr-control-plane` path does not install them. See the
+[example installation warning](../examples/langgraph_guard_example.md#install).
+The plain `guard_tool` and `guard_async_tool` wrappers do not require LangChain.
+
 Use:
 
 - `guard_tool(...)`
