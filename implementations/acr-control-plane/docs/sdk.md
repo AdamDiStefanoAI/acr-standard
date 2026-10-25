@@ -92,6 +92,14 @@ That wrapper will:
 - apply modified parameters on `modify`
 - return gateway-managed execution output when configured not to execute locally
 
+The Python SDK rejects ALLOW/MODIFY on non-200 evaluation responses. A MODIFY
+response must include an explicit replacement action and parameters for the
+requested tool; missing transformations and changed tool names raise an SDK
+error rather than executing the original call. An explicitly empty parameter
+object remains valid and follows the wrapped function's normal default-argument
+behavior. These checks do not authenticate a compromised gateway or provide
+approval replay/concurrency protection.
+
 ## TypeScript SDK
 
 The TypeScript package lives at:
