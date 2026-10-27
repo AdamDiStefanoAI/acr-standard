@@ -152,6 +152,8 @@ There is now an official [SDK and adapter guide](docs/sdk.md) covering:
 
 There is also a runnable [protected executor example](examples/protected_executor/README.md) that verifies both `X-ACR-Execution-Token` and `X-ACR-Brokered-Credential`, so downstream services can reject direct-bypass requests that were not explicitly authorized by the gateway.
 
+For OpenAI Agents SDK integrations, see the [OpenAI Agents SDK guard example](examples/openai_guard_example.py), which shows how to wrap tools with ACR’s `guard_tool` using a simple adapter pattern.
+
 For workflow builders and orchestration tools, there is now an explicit [orchestrator integration guide](docs/orchestrators.md) plus an [n8n reference example](examples/n8n/README.md) showing how to put ACR underneath the workflow layer instead of relying on optional user behavior.
 
 ## Quick Start
