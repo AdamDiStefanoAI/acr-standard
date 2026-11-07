@@ -105,6 +105,7 @@ ACR_ENV=test \
 DATABASE_URL=postgresql+asyncpg://acr:acr_dev_password@localhost:5432/acr_control_plane \
 REDIS_URL=redis://localhost:6379/1 \
 OPA_URL=http://localhost:8181 \
+POLICY_EXTENSION_DIR=operator-policies \
 RUN_INTEGRATION_TESTS=true \
 TEST_DATABASE_URL=postgresql+asyncpg://acr:acr_dev_password@localhost:5432/acr_control_plane \
 TEST_REDIS_URL=redis://localhost:6379/1 \

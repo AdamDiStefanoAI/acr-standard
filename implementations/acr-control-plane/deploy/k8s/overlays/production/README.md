@@ -86,3 +86,9 @@ If you diverge from this overlay, treat it as a custom platform variant and revi
 ## Release-paired core policies
 
 Read [the managed upgrade guide](../../../../docs/managed-policy-upgrades.md) before migrating from 1.2.1. Preserve the operator ConfigMap and active database policies. Select one immutable gateway image for the gateway and both init containers. The checked-in `1.3.0` tag is an example, not permission to deploy or a claim the image is already published.
+
+Before rollout or rollback, pause approval processing and new evaluations, resolve
+or deny pending approvals, and drain in-flight approved executions. The managed
+identity gate applies to new OPA evaluations, not the preexisting approved-action
+execution path. See the managed upgrade guide for this unvalidated cross-release
+approval/replay boundary.

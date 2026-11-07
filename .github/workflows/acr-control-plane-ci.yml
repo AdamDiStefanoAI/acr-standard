@@ -117,6 +117,7 @@ jobs:
       TEST_DATABASE_URL: postgresql+asyncpg://acr:acr_dev_password@localhost:5432/acr_control_plane
       TEST_REDIS_URL: redis://localhost:6379/1
       TEST_OPA_URL: http://localhost:8181
+      POLICY_EXTENSION_DIR: operator-policies
       # Root conftest imports settings before the integration conftest runs.
       DATABASE_URL: postgresql+asyncpg://acr:acr_dev_password@localhost:5432/acr_control_plane
       REDIS_URL: redis://localhost:6379/1

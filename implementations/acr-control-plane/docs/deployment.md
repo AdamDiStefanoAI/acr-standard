@@ -87,8 +87,11 @@ OPA runs as a gateway sidecar in Kubernetes and polls its paired gateway directl
 The former raw JSON discovery endpoint is not an OPA discovery bundle; do not
 configure it as `discovery.resource`.
 
-The gateway does not become ready or authorize actions until OPA has loaded its
-matching core. Bundle delivery remains available during this startup phase, so
+The gateway does not become ready or authorize new policy evaluations until OPA
+has loaded its matching core. The preexisting approved-action execution path does
+not perform a fresh OPA evaluation. Pause approval processing and resolve or drain
+outstanding approvals before a release cutover, as described in the managed
+upgrade guide. Bundle delivery remains available during startup, so
 readiness cannot deadlock bundle delivery. Follow the one-time migration before
 replacing legacy filesystem mounts.
 

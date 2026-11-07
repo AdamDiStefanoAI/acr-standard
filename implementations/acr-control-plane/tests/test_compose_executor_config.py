@@ -63,3 +63,33 @@ def test_kubernetes_pairs_opa_with_release_image_and_preserves_auth():
         yaml.safe_load((base / "gateway-configmap.yaml").read_text())["data"]["REQUIRE_BUNDLE_AUTH"]
         == "true"
     )
+
+
+def test_host_static_paths_match_exported_operator_policy_identity(tmp_path):
+    """Export real bytes and inspect their identity, without mocked policy responses."""
+    import json
+    import tarfile
+
+    from acr.policy_studio.core_bundle import export_bundle, operator_identity
+
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.safe_load(
+        (root.parents[1] / ".github/workflows/acr-control-plane-ci.yml").read_text()
+    )
+    host_directory = workflow["jobs"]["integration-tests"]["env"]["POLICY_EXTENSION_DIR"]
+    compose = yaml.safe_load((root / "docker-compose.yml").read_text())
+    mounts = compose["services"]["acr-policy-export"]["volumes"]
+    assert f"./{host_directory}:/operator-policies:ro" in mounts
+    for document in (root / "README.md", root.parents[1] / "CONTRIBUTING.md"):
+        assert f"POLICY_EXTENSION_DIR={host_directory} " in document.read_text()
+    intended = operator_identity(root / host_directory)
+    assert intended != operator_identity(None), "Sample customer-support policy must be included"
+    manifest = export_bundle(tmp_path / "export", root / host_directory)
+    assert manifest["operator_identity"] == intended
+    with tarfile.open(tmp_path / "export/bundle.tar.gz") as bundle:
+        rule = bundle.extractfile("bundle/operator_identity.rego").read().decode()
+        assert json.loads(rule.split(":=", 1)[1]) == intended
+        assert (
+            bundle.extractfile("bundle/extensions/customer_support.rego").read()
+            == (root / host_directory / "customer_support.rego").read_bytes()
+        )

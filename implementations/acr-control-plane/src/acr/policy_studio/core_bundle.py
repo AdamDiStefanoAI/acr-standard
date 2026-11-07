@@ -73,11 +73,30 @@ def extension_files(directory: str | Path | None) -> dict[str, bytes]:
         raise ValueError(f"Extension directory does not exist: {root}")
     sources = core_sources()
     result = {}
-    for path in sorted(root.rglob("*.rego")):
+    # Rego-only is an explicit migration boundary. Silently dropping OPA data
+    # documents can turn an operator deny into allow while identities still match.
+    # Inspect every file, including Kubernetes projection backing files, before
+    # selecting the visible Rego entries for the aggregate.
+    projected = (root / "..data").is_symlink()
+    for path in sorted(root.rglob("*")):
         if not path.resolve().is_relative_to(root.resolve()):
             raise ValueError(f"Policy symlink escapes extension directory: {path}")
-        if any(part.startswith("..") for part in path.relative_to(root).parts):
-            continue  # Kubernetes projection backing directories, not duplicate policies
+        if path.is_dir():
+            if path.is_symlink() and not (projected and path == root / "..data"):
+                raise ValueError(f"Policy directory symlink is not supported: {path}")
+            continue
+        if not path.is_file():
+            raise ValueError(f"Unsupported operator policy entry: {path}")
+        if path.name == ".gitkeep":
+            continue
+        if path.suffix != ".rego":
+            raise ValueError(
+                f"Unsupported operator policy data or file: {path}; only .rego files "
+                "and .gitkeep are supported. Convert data-dependent policies explicitly "
+                "before migration; do not discard their data documents."
+            )
+        if projected and any(part.startswith("..") for part in path.relative_to(root).parts):
+            continue  # Visible projected files are included once, not their backing copies.
         if path.name.endswith("_test.rego"):
             continue
         payload = path.read_bytes()

@@ -7,16 +7,40 @@ Studio releases from the database. No cron updates, mutable `latest` policy
 channel, manual core-file copying, or raw-JSON OPA discovery are used.
 
 The exporter generates a direct OPA bundle configuration pinned to the gateway's
-core ID. Gateway decisions verify that identity **in the same OPA response**;
-readiness also checks it. Missing, stale, or mixed core means no admission. This
+core ID. New gateway policy evaluations verify that identity **in the same OPA
+response**; readiness also checks it. Missing, stale, or mixed core rejects new
+policy evaluations. These checks do not cover every downstream execution. This
 checks accidental version skew, not remote attestation of a malicious OPA server.
 Active database-policy publication retains its existing asynchronous polling
 semantics: core/local-extension readiness does not prove a just-activated Studio
 revision has propagated. Verify the desired policy decision after activation.
 
+## Approval processing boundary and cutover prerequisite
+
+The preexisting approved-action path, `execute_approval` in
+`src/acr/pillar6_authority/approval.py`, calls the executor without a fresh OPA
+policy evaluation. New core/local-extension identity checks therefore do not
+revalidate pending approvals, previously approved actions, or their execution
+under a later release. Gateway readiness is not a replacement for controlling
+approval processing, especially for direct requests outside readiness-based routing.
+
+Before any upgrade, rollback, or policy cutover, pause approval processing and
+stop new evaluations that could create pending approvals. Inventory outstanding
+approvals and resolve them under the existing reviewed policy, or deliberately
+deny them and require a new evaluation after cutover. Drain any in-flight approved
+executions before replacing the release. Keep approval processing paused until
+new evaluations and the intended policy behavior have been verified. The upgrade
+script does not automate this approval inventory or resolution.
+
+This change does not alter the approved-action/replay lifecycle. Its behavior
+across release upgrades or rollback is a preexisting, unvalidated limitation of
+this upgrade workflow, even though ordinary approval/replay tests exist. Do not
+claim that a matching core identity reauthorizes stored approvals.
+
 ## One-time migration from 1.2.1
 
-1. Back up the database, deployment configuration and entire old policy directory.
+1. Complete the approval-processing prerequisite above. Back up the database,
+   deployment configuration and entire old policy directory.
    Retain the old immutable gateway image and release configuration for rollback.
 2. Run `python scripts/migrate_operator_policies.py policies/acr operator-policies`.
    This copies customer-support and custom `.rego` files without modifying the
@@ -26,8 +50,12 @@ revision has propagated. Verify the desired policy decision after activation.
    before retrying. Never delete those modifications just to make migration pass.
 3. Preserve `operator-policies/` as operator-owned configuration. Do not replace it
    with a later checkout's sample directory. Existing files use `package acr` or
-   an `acr` subpackage; core identity names are reserved. Data JSON extensions
-   and arbitrary outside-`acr` packages are not imported by this migration.
+   an `acr` subpackage; core identity names are reserved. Only `.rego` files and
+   `.gitkeep` are accepted. Data JSON/YAML, archives,
+   manifests and any other input cause refusal before copying anything, since
+   silently omitting data can weaken a deny rule. Review and convert unsupported
+   inputs or wait for explicit support; keep the original deployment until then.
+   Arbitrary outside-`acr` packages also require review.
 4. Set both `OPERATOR_API_KEYS_JSON` and `SERVICE_OPERATOR_API_KEY`. The latter
    must identify an existing key in the former with `auditor` (or an equivalent
    allowed bundle-read role). Empty values fail immediately in Compose. Use the
@@ -42,11 +70,13 @@ revision has propagated. Verify the desired policy decision after activation.
 
 Set `ACR_GATEWAY_IMAGE` to the reviewed release, preferably an immutable digest,
 then run `scripts/upgrade_compose.sh`. Use the same command with the retained
-prior managed release image to roll back. This deliberately stops admission,
+prior managed release image to roll back. Complete the approval-processing
+prerequisite first. The script deliberately stops the gateway,
 exports the new pinned OPA config, runs schema migrations, and restarts both
 services. It never deletes operator files or database/Redis volumes. Do not run
-`down -v` on a real deployment. A failed update leaves admission stopped or
-unready, rather than authorizing with stale core. Investigate logs and retry the
+`down -v` on a real deployment. A failed update leaves the gateway stopped or
+unready, and new evaluations reject stale core. Stored approval execution is
+outside this identity check. Investigate logs and retry the
 same image or restore the previous reviewed image.
 
 Rollback of application/policy artifacts does not reverse database migrations.
@@ -70,9 +100,10 @@ and preserve both. Version-qualified bundle URLs return 404 on the wrong core.
 
 Wait for `kubectl rollout status deployment/acr-gateway -n acr-system` and verify
 `/acr/ready` on **every** new Pod. Mixed gateway releases during an ordinary rolling
-update each enforce their matching core. If a policy change must take effect
-across all traffic simultaneously, use a planned admission stop or blue/green
-cutover; a rolling update is not an atomic fleet-wide policy cutover.
+update each enforce their matching core for new evaluations. If a policy change
+must take effect across all traffic simultaneously, pause new evaluations and
+approval processing, drain in-flight executions, and use a planned stop or
+blue/green cutover. A rolling update is not an atomic fleet-wide policy cutover.
 
 Update local operator files/ConfigMaps only intentionally and roll the gateway
 Pods after review. Avoid changing them during a core rollout. These files are

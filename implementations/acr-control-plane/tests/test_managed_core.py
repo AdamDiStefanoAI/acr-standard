@@ -88,7 +88,8 @@ def test_configmap_symlink_projection_and_escape(tmp_path):
     backing = root / "..2026"
     backing.mkdir(parents=True)
     (backing / "custom.rego").write_text('package acr\ndeny contains "custom" if { true }')
-    (root / "custom.rego").symlink_to("..2026/custom.rego")
+    (root / "..data").symlink_to("..2026", target_is_directory=True)
+    (root / "custom.rego").symlink_to("..data/custom.rego")
     assert list(extension_files(root)) == ["bundle/extensions/custom.rego"]
     (root / "escape.rego").symlink_to(tmp_path / "outside.rego")
     with pytest.raises(ValueError, match="escapes"):
@@ -328,3 +329,105 @@ def test_real_opa_release_and_operator_policy_survive_core_upgrade_rollback(tmp_
         observed.append(expected)
     assert observed[0] == observed[2] == old
     assert observed[1] != old
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "data.json",
+        "data.yaml",
+        "data.yml",
+        ".manifest",
+        "policy.tar.gz",
+        "archive.zip",
+        "unknown.txt",
+    ],
+)
+@pytest.mark.parametrize("projected", [False, True])
+def test_unsupported_operator_data_refused_before_export(tmp_path, name, projected):
+    root = tmp_path / "extensions"
+    root.mkdir()
+    source = root / "..2026" if projected else root
+    source.mkdir(exist_ok=True)
+    (source / "custom.rego").write_text('package acr\ndeny contains "block" if { true }')
+    (source / name).write_text('{"acr": {"blocked_tools": ["shell"]}}')
+    if projected:
+        (root / "..data").symlink_to("..2026", target_is_directory=True)
+        for filename in ("custom.rego", name):
+            (root / filename).symlink_to(f"..data/{filename}")
+    output = tmp_path / "output"
+    with pytest.raises(ValueError, match="Unsupported operator policy data"):
+        export_bundle(output, root)
+    assert not output.exists()
+    with pytest.raises(ValueError, match="Unsupported operator policy data"):
+        build_active_runtime_bundle([], extensions=str(root))
+    with pytest.raises(ValueError, match="Unsupported operator policy data"):
+        operator_identity(root)
+    assert (source / name).read_text() == '{"acr": {"blocked_tools": ["shell"]}}'
+
+
+@pytest.mark.skipif(not OPA, reason="set OPA_BINARY to run real OPA checks")
+def test_real_opa_data_backed_deny_cannot_silently_become_allow(tmp_path):
+    root = tmp_path / "legacy"
+    root.mkdir()
+    for name, contents in core_sources().items():
+        (root / name).write_bytes(contents)
+    (root / "custom.rego").write_text(
+        "package acr\nimport future.keywords.in\nimport future.keywords.contains\n"
+        "import future.keywords.if\n"
+        'deny contains "operator blocklist" if { input.action.tool_name in data.acr.blocked_tools }'
+    )
+    (root / "data.json").write_text('{"acr": {"blocked_tools": ["shell"]}}')
+    request = {
+        "agent": {"allowed_tools": ["shell"], "forbidden_tools": [], "boundaries": {}},
+        "action": {"tool_name": "shell", "parameters": {}},
+        "context": {},
+    }
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(request))
+    process = subprocess.run(
+        [OPA, "eval", "-d", str(root), "-i", str(input_path), "--format=json", "data.acr"],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    value = json.loads(process.stdout)["result"][0]["expressions"][0]["value"]
+    assert "operator blocklist" in value["deny"]
+    assert value["allow"] is False
+    # The managed path refuses the entire input, rather than dropping data.json
+    # and exporting an apparently compatible bundle that authorizes the action.
+    with pytest.raises(ValueError, match="Unsupported operator policy data"):
+        export_bundle(tmp_path / "managed", root)
+    with pytest.raises(ValueError, match="Unsupported operator policy data"):
+        build_active_runtime_bundle([], extensions=str(root))
+    assert not (tmp_path / "managed").exists()
+
+
+async def test_added_data_file_blocks_decisions_from_previously_loaded_bundle(
+    tmp_path, monkeypatch
+):
+    from acr.config import settings
+
+    (tmp_path / "custom.rego").write_text('package acr\ndeny contains "block" if { false }')
+    loaded_identity = operator_identity(tmp_path)
+    (tmp_path / "data.json").write_text('{"acr": {"blocked_tools": ["shell"]}}')
+    monkeypatch.setattr(settings, "policy_extension_dir", str(tmp_path))
+    result = {"allow": True, "core_identity": core_identity(), "operator_identity": loaded_identity}
+    with (
+        patch(
+            "acr.pillar2_policy.engine.opa_breaker.call_async",
+            new=AsyncMock(return_value={"result": result}),
+        ),
+        pytest.raises(PolicyEngineError, match="Invalid operator policy configuration"),
+    ):
+        await evaluate_policy({}, {}, {})
+
+
+def test_operator_directory_symlink_refused_instead_of_silently_skipped(tmp_path):
+    root = tmp_path / "extensions"
+    backing = root / "real"
+    backing.mkdir(parents=True)
+    (backing / "custom.rego").write_text('package acr\ndeny contains "block" if { true }')
+    (root / "linked").symlink_to("real", target_is_directory=True)
+    with pytest.raises(ValueError, match="directory symlink"):
+        extension_files(root)

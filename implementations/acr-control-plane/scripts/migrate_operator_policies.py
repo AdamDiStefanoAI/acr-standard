@@ -14,6 +14,17 @@ def migrate(source: Path, destination: Path) -> None:
     files = sorted(source.rglob("*.rego"))
     if not source.is_dir():
         raise SystemExit(f"Legacy policy directory does not exist: {source}")
+    # Do not silently omit OPA data or opaque bundles: that can turn an existing
+    # data-backed deny rule into allow even when the copied Rego is unchanged.
+    for path in sorted(source.rglob("*")):
+        if path.is_symlink():
+            raise SystemExit(f"Legacy symlink requires manual review; nothing copied: {path}")
+        if path.is_file() and path.suffix != ".rego" and path.name != ".gitkeep":
+            raise SystemExit(
+                f"Unsupported legacy policy input {path}; nothing copied. "
+                "Data files and bundled policies require reviewed conversion or explicit "
+                "managed-bundle support before migration; keep the original deployment."
+            )
     copies = []
     for path in files:
         if path.name.endswith("_test.rego"):

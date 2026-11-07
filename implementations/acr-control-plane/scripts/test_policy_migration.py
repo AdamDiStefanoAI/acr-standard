@@ -48,3 +48,30 @@ with tempfile.TemporaryDirectory() as temp:
         pass
     assert not (root / "refused").exists()
 print("PASS: v1.2.1 migration, preservation, repeatability, no overwrite, modified-core refusal")
+
+# A data-backed deny must not become an apparently successful partial migration.
+for name in ("data.json", "data.yaml", "data.yml", "policies.tar.gz", ".manifest", "README.md"):
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        source = root / "legacy"
+        source.mkdir()
+        (source / "custom.rego").write_text(
+            "package acr\nimport future.keywords.if\nimport future.keywords.contains\n"
+            'deny contains "data-backed deny" if { data.acr.blocked == true }\n'
+        )
+        (source / name).write_text('{"acr":{"blocked":true}}')
+        before = digest_tree(source)
+        destination = root / "operator"
+        destination.mkdir()
+        (destination / "existing.rego").write_text("package acr\n# existing operator file\n")
+        retained = digest_tree(destination)
+        try:
+            migrate(source, destination)
+            raise AssertionError("Silently omitted a data-backed deny dependency: " + name)
+        except SystemExit as error:
+            assert "nothing copied" in str(error)
+            assert "reviewed conversion" in str(error)
+        assert digest_tree(source) == before
+        assert digest_tree(destination) == retained
+        assert not (destination / "custom.rego").exists()
+print("PASS: unsupported data/bundle inputs refuse before any copies; source/destination unchanged")
