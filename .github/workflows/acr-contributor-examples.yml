@@ -1,0 +1,92 @@
+name: ACR contributor examples
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'implementations/acr-control-plane/**'
+      - '.github/workflows/acr-contributor-examples.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acr-contributor-examples-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  openai-sdk-live:
+    name: OpenAI SDK local gateway and dispatch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: implementations/acr-control-plane
+    env:
+      COMPOSE_PROJECT_NAME: acr-openai-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_FILE: docker-compose.yml:docker-compose.openai-guard-test.yml
+      # Public synthetic configuration, valid only in this disposable runner.
+      OPERATOR_API_KEYS_JSON: '{"dev-operator-key":{"subject":"dev-operator","roles":["agent_admin","approver","security_admin","auditor","killswitch_operator"]}}'
+      SERVICE_OPERATOR_API_KEY: dev-operator-key
+      ACR_OPERATOR_API_KEY: dev-operator-key
+      ACR_BASE_URL: http://localhost:8000
+      EXECUTE_ALLOWED_ACTIONS: 'false'
+      OPENAI_AGENTS_DISABLE_TRACING: '1'
+      ACR_ENV: development
+      ACR_GUARD_EVIDENCE: contributor-evidence/openai-live.json
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Record pinned source and install exact optional SDK
+        timeout-minutes: 5
+        run: |
+          mkdir -p contributor-evidence
+          git rev-parse HEAD > contributor-evidence/revision.txt
+          python --version > contributor-evidence/python-version.txt
+          python -m pip install -e '.[dev]' openai-agents==0.24.0
+          python -m pip freeze > contributor-evidence/dependencies.txt
+          python -c 'import agents; from importlib.metadata import version; assert version("openai-agents") == "0.24.0"'
+      - name: Require offline safety and real SDK dispatch tests without skips
+        timeout-minutes: 3
+        env:
+          ACR_ENV: test
+        run: |
+          python -m pytest tests/test_contributor_guard_examples.py -v --junitxml=contributor-evidence/tests.xml
+          python -c 'import xml.etree.ElementTree as E; r=E.parse("contributor-evidence/tests.xml").getroot(); s=r.findall("testsuite"); assert s and sum(int(x.get("tests",0)) for x in s)>=29; assert sum(int(x.get("skipped",0)) for x in s)==0'
+      - name: Start disposable quickstart stack with execution off
+        timeout-minutes: 12
+        run: |
+          docker compose version > contributor-evidence/compose-version.txt
+          docker compose config --quiet
+          docker compose up --build -d --wait --wait-timeout 300
+          docker compose exec -T acr-gateway python -c 'from acr.config import settings; assert settings.execute_allowed_actions is False'
+      - name: Run documented live example and all four real decisions
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          python examples/openai_guard_example.py --live --agents | tee contributor-evidence/documented-live.log
+          PYTHONPATH=src:. python scripts/validate_openai_guard_live.py | tee contributor-evidence/four-decisions.log
+      - name: Capture bounded disposable diagnostics
+        if: always()
+        run: |
+          mkdir -p contributor-evidence
+          docker compose ps -a > contributor-evidence/compose-status.txt
+          docker compose logs --no-color --tail 150 > contributor-evidence/compose.log
+      - name: Remove only this run's disposable stack
+        if: always()
+        timeout-minutes: 3
+        run: docker compose down --volumes --remove-orphans
+      - name: Retain synthetic evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: acr-contributor-examples-${{ github.run_id }}-${{ github.run_attempt }}
+          path: implementations/acr-control-plane/contributor-evidence/
+          retention-days: 7
+          if-no-files-found: error

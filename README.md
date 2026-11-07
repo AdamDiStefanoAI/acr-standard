@@ -324,6 +324,8 @@ The control plane is a reference implementation for evaluation and contribution.
 
 See the [evidence walkthrough](docs/evidence-walkthrough.md) for actual synthetic allow/deny responses, observed execution counts, and matching captured ALLOW and DENY events/exports. The limits of this disposable test are explicit.
 
+New to the control flow? Read the [plain-language decision walkthrough](docs/decisions-explained.md) from guarded request through policy, filtering, approval, and evidence.
+
 ## Contributing
 
 Start with the [coding contribution guide](CONTRIBUTING.md#code-contributions) for setup, tests, and the repository map. Use [GitHub Issues](https://github.com/AdamDiStefanoAI/acr-standard/issues) for questions, bugs, and design proposals. We welcome focused PRs. See [`CONTRIBUTING.md`](./CONTRIBUTING.md), [`GOVERNANCE.md`](./GOVERNANCE.md), and [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md). Security issues: [`SECURITY.md`](./SECURITY.md).

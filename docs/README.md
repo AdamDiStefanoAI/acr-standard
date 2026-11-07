@@ -44,6 +44,7 @@ Choose a path based on your role. Each path is 3–5 steps to the most relevant 
 
 ## Key Documents
 
+- [Decision walkthrough](decisions-explained.md) — Plain-language explanation of the guarded-tool decision pipeline
 - [Telemetry Schema](specifications/telemetry-schema.md) — JSON schema for observability events
 - [Implementation Guide](guides/acr-implementation-guide.md) — Deployment patterns and reference architectures
 - [STRIKE Threat Model](security/acr-strike-threat-model.md) — AI-specific runtime threats
