@@ -384,6 +384,8 @@ Use this as the single OPA entrypoint in production.
 
 Returns a tar.gz bundle containing:
 - shared `common.rego`
+- shared `content_safety.rego` (default content-level guardrails: destructive
+  shell commands, path traversal, base64-encoded destructive payloads)
 - all currently activated agent policy releases, scoped to their `agent_id`
 - bundle metadata listing the active releases
 
