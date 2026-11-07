@@ -6,6 +6,8 @@ This directory contains implementation guidance for ACR (Agentic Control at Runt
 
 The ACR Runtime Control Plane Standard v1.0.1 PDF (2026-03-29) is the normative baseline for these summaries. The published standard and companion material are available through [runtimecontrol.io](https://runtimecontrol.io). The normative PDF and published website take precedence over repository guidance where they differ. Repository examples, design targets, and recommended patterns do not add to or waive the standard’s requirements, and do not demonstrate implementation conformance.
 
+The repository specification is version 1.2.0 (2026-11-07), aligned with implementation release v1.2.0. It adds default content-level guardrails to Pillar 2 (Behavioral Policy Enforcement). The normative PDF remains v1.0.1 until a revised PDF is issued; the v1.2 additions are documented in this repository and are pending incorporation into the next PDF revision. Conformance claims against the PDF cite v1.0.1, and conformance claims against the repository specification cite v1.2.0.
+
 “ACR Framework v1.0” and telemetry schema version `1.0` in older guidance identify those documents or formats; they are not the normative PDF version or a software release identifier. Cite the exact artifact and version assessed. See the [adoption guide](../ADOPTION.md#citation).
 
 Section 21 intentionally covers both operational attack surfaces and the canonical STRIKE taxonomy. Preserve both views when mapping threats; one does not replace the other. Conformance claims follow §23 and must state their scope. Level 1 observability alone does not establish controlled execution or full runtime control-plane compliance.
