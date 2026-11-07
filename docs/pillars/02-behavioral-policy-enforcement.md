@@ -296,7 +296,7 @@ Total budget: <120ms for complete policy evaluation
 2. **Path traversal.** `..` used as a path segment (for example `../../etc/passwd`).
 3. **Base64-encoded destructive payloads.** A whole string value that looks like base64 and decodes to printable text is re-checked against the destructive shell patterns.
 
-**Narrowness.** Each destructive rule requires the dangerous command AND its dangerous target, so ordinary commands such as `rm -rf ./build` or `chmod 777 myfile.txt` do not match. Where a pattern or a boundary was ambiguous, the conservative option (fewer false positives) was chosen. The reference implementation for these rules is `policies/acr/content_safety.rego`, with 26 OPA tests (17 deny, 9 allow) in `content_safety_test.rego`.
+**Narrowness.** Each destructive rule requires the dangerous command AND its dangerous target, so ordinary commands such as `rm -rf ./build` or `chmod 777 myfile.txt` do not match. Where a pattern or a boundary was ambiguous, the conservative option (fewer false positives) was chosen. The reference implementation for these rules is `policies/acr/content_safety.rego`, with deny and allow regression tests in `content_safety_test.rego`.
 
 **Explicit non-scope.** Prompt injection is OUT OF SCOPE for these defaults. No default rule claims to detect injected instructions. Detecting injected instructions needs a dedicated detector; operators who need prompt-injection protection must add one. The defaults are a floor, not complete protection: they cover the deterministic destructive patterns above and are not a substitute for per-tool parameter rules written by the operator.
 

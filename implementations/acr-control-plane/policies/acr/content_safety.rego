@@ -63,7 +63,7 @@ all_string_parameter_values contains value if {
 # This is not a shell parser: substitutions, aliases, scripts and dynamically
 # constructed commands still require a tool-specific policy or sandbox.
 shell_tokens(value) := regex.find_n(
-	`#[^\n]*|(?:[^ \t\n'"\\;|&()<>]|\\[^\n]|"(?:\\[\s\S]|[^"\\])*"|'[^']*')+|[<>]+[&|]?|&>>?|&&|\|\||[;|&()\n]`,
+	`#[^\n]*|[0-9]*[<>]+[&|]?|&>>?|(?:[^ \t\n'"\\;|&()<>]|\\[^\n]|"(?:\\[\s\S]|[^"\\])*"|'[^']*')+|&&|\|\||[;|&()\n]`,
 	replace(value, "\\\n", ""),
 	-1,
 )
@@ -89,13 +89,31 @@ shell_commands(value) := {command |
 # expansions: '$HOME', "\$HOME" and "~" name literal relative paths.
 shell_literal(value) := replace(replace(value, "$", "\\$"), "~", "\\~")
 
+# Recognize variable names before quote removal; $H""OME is not $HOME.
+shell_expansion(part) := part if {
+	part in {"$HOME", "${HOME}"}
+} else := shell_literal(part) if {
+	startswith(part, "$")
+} else := part
+
+shell_expansions(value) := concat("", [shell_expansion(part) |
+	parts := regex.find_n(`\$\{[^}]*\}|\$[a-zA-Z_][a-zA-Z0-9_]*|\$|[^$]+`, value, -1)
+	part := parts[_]
+])
+
+# Tilde expansion needs an unquoted leading ~ and an unquoted slash (or end).
+shell_tilde(raw, value) := concat("", ["\\", value]) if {
+	startswith(value, "~")
+	not regex.match(`^~(/|$)`, raw)
+} else := value
+
 shell_unquoted_part(part) := shell_literal(substring(part, 1, -1)) if {
 	startswith(part, "\\")
-} else := part
+} else := shell_expansions(part)
 
 shell_double_quoted_part(part) := shell_literal(substring(part, 1, -1)) if {
 	regex.match(`^\\[$\x60"\\]$`, part)
-} else := replace(part, "~", "\\~")
+} else := replace(shell_expansions(part), "~", "\\~")
 
 shell_part(part) := shell_literal(substring(part, 1, count(part) - 2)) if {
 	startswith(part, "'")
@@ -106,17 +124,17 @@ shell_part(part) := shell_literal(substring(part, 1, count(part) - 2)) if {
 	startswith(part, "\"")
 } else := shell_unquoted_part(part)
 
-shell_word(word) := concat("", [shell_part(part) |
+shell_word(word) := shell_tilde(word, concat("", [shell_part(part) |
 	parts := regex.find_n(`'[^']*'|"(?:\\[\s\S]|[^"\\])*"|\\[\s\S]|[^'"\\]+`, word, -1)
 	part := parts[_]
-])
+]))
 
 # Redirection destinations are not command operands. Keep them available to
 # the separate block-device redirection rule below.
 shell_operand(command, i) if {
 	i > 0
-	not regex.match(`^([<>]+[&|]?|&>>?)$`, command[i])
-	not regex.match(`^([<>]+[&|]?|&>>?)$`, command[i - 1])
+	not regex.match(`^([0-9]*[<>]+[&|]?|&>>?)$`, command[i])
+	not regex.match(`^([0-9]*[<>]+[&|]?|&>>?)$`, command[i - 1])
 }
 
 # Scope every command/target pair to a single invocation, never the whole
@@ -162,7 +180,7 @@ dangerous_rm_target(arg) if {
 	regex.match(`^(/\*?|~(/[\s\S]*)?|\$(HOME|\{HOME\})(/[\s\S]*)?)$`, arg)
 }
 
-destructive_shell(value) if {
+destructive_shell_command(value) if {
 	args := shell_arguments(value, "rm")[_]
 	rm_recursive(args)
 	rm_force(args)
@@ -171,7 +189,7 @@ destructive_shell(value) if {
 }
 
 # Preserve the documented safety-override rule, but only for this rm's options.
-destructive_shell(value) if {
+destructive_shell_command(value) if {
 	args := shell_arguments(value, "rm")[_]
 	some i
 	args[i] == "--no-preserve-root"
@@ -179,7 +197,7 @@ destructive_shell(value) if {
 }
 
 # mkfs requires a path or flag, not a bare mention of the command.
-destructive_shell(value) if {
+destructive_shell_command(value) if {
 	args := shell_arguments(value, `mkfs(\.[a-z0-9]+)?`)[_]
 	regex.match(`^(/\S+|-[a-zA-Z])`, args[_])
 }
@@ -189,7 +207,7 @@ block_device(value) if {
 }
 
 # dd's output must belong to the same command, not a later echo/printf.
-destructive_shell(value) if {
+destructive_shell_command(value) if {
 	args := shell_arguments(value, "dd")[_]
 	some arg in args
 	startswith(arg, "of=")
@@ -197,41 +215,95 @@ destructive_shell(value) if {
 }
 
 # The fork bomb: :(){ :|:& };: (whitespace-tolerant).
-destructive_shell(value) if {
+destructive_shell_command(value) if {
 	regex.match(`:\(\)`, value)
 	regex.match(`:\s*\|\s*:`, value)
 	regex.match(`&\s*\}\s*;`, value)
 }
 
-# chmod 777 on the filesystem root, including ordinary quoted operands.
-destructive_shell(value) if {
-	args := shell_arguments(value, "chmod")[_]
+# chmod takes its mode from the first non-option operand. A later filename
+# named 777 is not a mode, and --reference supplies the mode from a file.
+chmod_option(args, i) if {
+	shell_option(args, i)
+	regex.match(`^(-[Rcfv]+|--(recursive|changes|silent|quiet|verbose|preserve-root|no-preserve-root|help|version)|--)$`, args[i])
+}
+
+chmod_reference(args) if {
 	some i, arg in args
-	arg == "777"
-	some j
-	j > i
-	regex.match(`^/\*?$`, args[j])
+	shell_option(args, i)
+	regex.match(`^--reference(=|$)`, arg)
+}
+
+# chmod 777 on the filesystem root, including ordinary quoted operands.
+destructive_shell_command(value) if {
+	args := shell_arguments(value, "chmod")[_]
+	not chmod_reference(args)
+	operands := [arg |
+		some i, arg in args
+		not chmod_option(args, i)
+	]
+	operands[0] == "777"
+	some i, target in operands
+	i > 0
+	regex.match(`^/\*?$`, target)
 }
 
 # Shell redirection to a block device, including quoted destinations.
 # /dev/null remains outside the device list.
-destructive_shell(value) if {
+destructive_shell_command(value) if {
 	command := shell_commands(value)[_]
 	some i, token in command
-	regex.match(`^(>>?|>\||>&|&>>?)$`, token)
+	regex.match(`^([0-9]*(>>?|>\||>&)|&>>?)$`, token)
 	block_device(shell_word(command[i + 1]))
+}
+
+# Inspect one explicit shell -c command string without evaluating it. Dequote
+# the outer argument and let the same lexical rules examine the inner command.
+# This is deliberately bounded: nested interpreters and dynamic scripts still
+# require operator-specific controls.
+shell_values(value) := {value} | {script |
+	args := shell_arguments(value, `(ba|da|k|z)?sh`)[_]
+	some i, arg in args
+	shell_option(args, i)
+	regex.match(`^-[a-zA-Z]*c[a-zA-Z]*$`, arg)
+	script := replace(replace(args[i + 1], "\\$", "$"), "\\~", "~")
+}
+
+destructive_shell(value) if {
+	candidate := shell_values(value)[_]
+	destructive_shell_command(candidate)
 }
 
 # ── Path traversal ────────────────────────────────────────────────────────────
 # Standalone paths and path-bearing arguments (including quoted arguments and
 # --option=../path) are covered. Bare ".." arguments such as "cd .." remain
 # outside this heuristic; dot-containing names and ellipses are not segments.
-path_traversal(value) if {
-	regex.match(`(^|[/\\])\.\.(/|\\|[\s'";|&)]|$)`, value)
-}
+# Join adjacent quoted pieces before checking path segments. Preserve
+# backslashes because these defaults inspect Windows paths as well as POSIX
+# paths, regardless of tool or execution platform.
+shell_path_part(part) := substring(part, 1, count(part) - 2) if {
+	startswith(part, "'")
+} else := substring(part, 1, count(part) - 2) if {
+	startswith(part, "\"")
+} else := part
+
+shell_path_word(word) := concat("", [shell_path_part(part) |
+	parts := regex.find_n(`'[^']*'|"(?:\\[\s\S]|[^"\\])*"|\\[\s\S]|[^'"\\]+`, word, -1)
+	part := parts[_]
+])
 
 path_traversal(value) if {
-	regex.match(`(^|[\s'"=;|&(])\.\.[/\\]`, value)
+	candidate := shell_values(value)[_]
+	tokens := shell_tokens(candidate)
+	some token in tokens
+	path := shell_path_word(token)
+	path != ".."
+	regex.match(`(^|[/\\=])\.\.([/\\]|$)`, path)
+}
+
+# A standalone '..' path is different from the documented bare argument case.
+path_traversal(value) if {
+	shell_path_word(value) == ".."
 }
 
 # ── Base64-encoded destructive payloads ───────────────────────────────────────

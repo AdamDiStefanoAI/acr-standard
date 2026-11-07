@@ -392,3 +392,113 @@ test_allow_safe_descriptor_redirection if {
 		count(deny) == 0 with input as base_input("shell_exec", {"command": command})
 	}
 }
+
+# Quoting cannot assemble a new variable name or activate a literal tilde.
+test_allow_mixed_quoted_literal_home if {
+	every command in [
+		`rm -rf ""~`,
+		`rm -rf ~"/"`,
+		`rm -rf ~''/`,
+		`rm -rf $H""OME`,
+		`rm -rf "$H"OME`,
+		`rm -rf "$"HOME`,
+		`rm -rf $HO'ME'`,
+		`rm -rf ${H}OME`,
+	] {
+		allow with input as base_input("shell_exec", {"command": command})
+		count(deny) == 0 with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+test_deny_active_home_expansion_with_quoted_suffix if {
+	every command in [
+		`rm -rf $HOME""`,
+		`rm -rf "$HOME"/`,
+		`rm -rf ${HOME}''`,
+		`rm -rf ~/""`,
+	] {
+		not allow with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+# The chmod mode is the first non-option operand, not a later filename.
+test_allow_chmod_777_filename if {
+	every command in [
+		`chmod 755 777 /`,
+		`chmod -R 755 777 /`,
+		`chmod -- 755 777 /`,
+		`chmod --reference=777 /`,
+		`chmod --reference 777 /`,
+		`chmod -w 777 /`,
+		`chmod -R -w 777 /`,
+	] {
+		allow with input as base_input("shell_exec", {"command": command})
+		count(deny) == 0 with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+test_deny_chmod_actual_mode_with_options if {
+	every command in [
+		`chmod -- 777 /`,
+		`chmod -R -- 777 /`,
+		`chmod 2>&1 777 /`,
+		`chmod -R 2>/tmp/log 777 /`,
+	] {
+		not allow with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+# Quote removal joins path pieces, but quoted boundaries are not path separators.
+test_deny_concatenated_quoted_traversal if {
+	every command in [
+		`cat '..'/secret.txt`,
+		`cat "."'./secret.txt'`,
+		`cat --input='..'/secret.txt`,
+		`cat 'folder/..'/secret.txt`,
+		`cat "folder/.."`,
+		`sh -c 'cat ".."/secret.txt'`,
+	] {
+		not allow with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+test_allow_quoted_traversal_lookalike_suffix if {
+	every command in [
+		`cat "./folder/.."suffix`,
+		`cat './folder/..'suffix`,
+		`cat ".."suffix/secret.txt`,
+	] {
+		allow with input as base_input("shell_exec", {"command": command})
+		count(deny) == 0 with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+test_deny_explicit_shell_command_strings if {
+	every command in [
+		`sh -c 'rm -rf $HOME'`,
+		`sh -c 'rm -rf $HOME;'`,
+		`bash -c 'rm -rf $HOME '`,
+		`sh -c 'rm -rf "$HOME"'`,
+		`bash -lc 'rm -rf /'`,
+		`sudo /bin/sh -c 'dd of=/dev/sda'`,
+		`sh -c "chmod 777 /"`,
+	] {
+		not allow with input as base_input("shell_exec", {"command": command})
+		encoded := base64.encode(command)
+		not allow with input as base_input("shell_exec", {"command": encoded})
+	}
+}
+
+test_allow_explicit_safe_shell_command_strings if {
+	every command in [
+		`sh -c 'rm -rf ./build && ls /'`,
+		`sh -c 'rm -rf \$HOME'`,
+		`sh -c 'rm -rf "~"'`,
+		`sh -c 'chmod 755 777 /'`,
+		`sh -c 'printf hello' 'rm -rf /'`,
+		`sh -- -c 'rm -rf /'`,
+	] {
+		allow with input as base_input("shell_exec", {"command": command})
+		count(deny) == 0 with input as base_input("shell_exec", {"command": command})
+	}
+}
