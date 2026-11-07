@@ -31,15 +31,23 @@ def _scoped_rego_policy(*, agent_id: str, rego_policy: str) -> str:
     return "\n".join(scoped_lines) + "\n"
 
 
-def _common_policy_bytes() -> bytes:
+def _policy_bytes(filename: str) -> bytes:
     current = Path(__file__).resolve()
     for parent in current.parents:
-        candidate = parent / "policies" / "acr" / "common.rego"
+        candidate = parent / "policies" / "acr" / filename
         if candidate.exists():
             return candidate.read_bytes()
     raise FileNotFoundError(
-        "Unable to locate policies/acr/common.rego from policy_studio/distribution.py"
+        f"Unable to locate policies/acr/{filename} from policy_studio/distribution.py"
     )
+
+
+def _common_policy_bytes() -> bytes:
+    return _policy_bytes("common.rego")
+
+
+def _content_safety_policy_bytes() -> bytes:
+    return _policy_bytes("content_safety.rego")
 
 
 def build_active_runtime_bundle(
@@ -51,6 +59,7 @@ def build_active_runtime_bundle(
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
         files: dict[str, bytes] = {
             "bundle/common.rego": _common_policy_bytes(),
+            "bundle/content_safety.rego": _content_safety_policy_bytes(),
             "bundle/metadata.json": json.dumps(
                 {
                     "type": "acr-active-runtime-bundle",
