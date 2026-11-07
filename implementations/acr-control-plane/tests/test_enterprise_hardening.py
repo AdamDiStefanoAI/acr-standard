@@ -21,12 +21,19 @@ from acr.pillar4_observability.integrity import verify_event_chain
 from acr.pillar4_observability.schema import LatencyBreakdown
 from acr.pillar4_observability.telemetry import build_event, persist_event
 from acr.pillar6_authority.approval import create_approval_request, execute_approval
+from acr.policy_studio.core_bundle import core_identity, operator_identity
 
 
 def _mock_opa_response(result: dict) -> AsyncMock:
     response = MagicMock()
     response.status_code = 200
-    response.json.return_value = {"result": result}
+    response.json.return_value = {
+        "result": {
+            **result,
+            "core_identity": core_identity(),
+            "operator_identity": operator_identity(),
+        }
+    }
     response.raise_for_status = MagicMock()
     response.request = MagicMock()
 

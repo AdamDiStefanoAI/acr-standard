@@ -1,0 +1,227 @@
+"""Release-owned policy resources, reproducible bundles, and loaded-core identity.
+
+The identity detects accidental missing/mixed/stale policy modules. OPA and its
+configuration remain trusted: this is not remote attestation against malicious OPA.
+"""
+
+from __future__ import annotations
+
+import argparse
+import gzip
+import hashlib
+import io
+import json
+import os
+import re
+import tarfile
+from importlib.resources import files
+from pathlib import Path
+
+CORE_FILES = ("common.rego", "content_safety.rego")
+CONTRACT_VERSION = 1
+_RESERVED = re.compile(r"\b(?:core_identity|__acr_core_files|operator_identity)\b")
+
+
+def canonical_json(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def core_sources() -> dict[str, bytes]:
+    root = files("acr.policy_studio").joinpath("core")
+    return {name: root.joinpath(name).read_bytes() for name in CORE_FILES}
+
+
+def core_identity() -> dict:
+    digests = {name: hashlib.sha256(body).hexdigest() for name, body in core_sources().items()}
+    identity = {"contract_version": CONTRACT_VERSION, "files": digests}
+    return {**identity, "core_id": hashlib.sha256(canonical_json(identity)).hexdigest()}
+
+
+def managed_core_files() -> dict[str, bytes]:
+    identity = core_identity()
+    result = {}
+    for name, body in core_sources().items():
+        # Each source owns its own marker; removing/mixing modules cannot leave
+        # an independent manifest claiming a complete matching core.
+        marker = (
+            f"\n__acr_core_files[{json.dumps(name)}] := {json.dumps(identity['files'][name])}\n"
+        )
+        result[f"bundle/{name}"] = body + marker.encode()
+    result["bundle/core_identity.rego"] = (
+        "package acr\nimport future.keywords.if\n"
+        f'core_identity := {{"core_id": "{identity["core_id"]}", '
+        f'"contract_version": {CONTRACT_VERSION}, "files": __acr_core_files}}\n'
+    ).encode()
+    return result
+
+
+def validate_extension(source: str, *, name: str) -> None:
+    if _RESERVED.search(source):
+        raise ValueError(f"Extension {name} uses reserved core identity names")
+    # The aggregate owns acr only. Reject unsupported packages instead of
+    # silently loading policies outside the bundle's declared root.
+    packages = re.findall(r"(?m)^\s*package\s+([^\s#]+)", source)
+    if len(packages) != 1 or not (packages[0] == "acr" or packages[0].startswith("acr.")):
+        raise ValueError(f"Extension {name} must declare package acr or an acr subpackage")
+
+
+def extension_files(directory: str | Path | None) -> dict[str, bytes]:
+    if directory is None:
+        return {}
+    root = Path(directory)
+    if not root.is_dir():
+        raise ValueError(f"Extension directory does not exist: {root}")
+    sources = core_sources()
+    result = {}
+    for path in sorted(root.rglob("*.rego")):
+        if not path.resolve().is_relative_to(root.resolve()):
+            raise ValueError(f"Policy symlink escapes extension directory: {path}")
+        if any(part.startswith("..") for part in path.relative_to(root).parts):
+            continue  # Kubernetes projection backing directories, not duplicate policies
+        if path.name.endswith("_test.rego"):
+            continue
+        payload = path.read_bytes()
+        if path.name in CORE_FILES:
+            if payload != sources[path.name]:
+                raise ValueError(
+                    f"Modified legacy core file {path}; extract local changes into an extension "
+                    "and remove the old core copy before upgrading"
+                )
+            continue
+        validate_extension(payload.decode(), name=str(path))
+        result[f"bundle/extensions/{path.relative_to(root).as_posix()}"] = payload
+    return result
+
+
+def deterministic_archive(payloads: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    # gzip's timestamp and original filename must not depend on wall clock/path.
+    with (
+        gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0, filename="") as compressed,
+        tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive,
+    ):
+        for name, payload in sorted(payloads.items()):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(payload))
+    return buffer.getvalue()
+
+
+def operator_identity(directory: str | Path | None = None) -> str:
+    return extension_identity(extension_files(directory))
+
+
+def extension_identity(payloads: dict[str, bytes]) -> str:
+    digests = {
+        name: hashlib.sha256(body).hexdigest()
+        for name, body in payloads.items()
+        if name.startswith("bundle/extensions/")
+    }
+    return hashlib.sha256(canonical_json(digests)).hexdigest()
+
+
+def assemble_bundle(payloads: dict[str, bytes]) -> tuple[bytes, dict]:
+    identity = core_identity()
+    operator = extension_identity(payloads)
+    payloads = {
+        **payloads,
+        "bundle/operator_identity.rego": f'package acr\noperator_identity := "{operator}"\n'.encode(),
+    }
+    hashes = {name: hashlib.sha256(body).hexdigest() for name, body in sorted(payloads.items())}
+    revision = hashlib.sha256(canonical_json(hashes)).hexdigest()
+    manifest = {"revision": revision, "roots": ["acr"], "rego_version": 1}
+    archive = deterministic_archive({**payloads, ".manifest": canonical_json(manifest)})
+    return archive, {
+        "core": identity,
+        "operator_identity": operator,
+        "revision": revision,
+        "files": hashes,
+        "sha256": hashlib.sha256(archive).hexdigest(),
+    }
+
+
+def opa_config(gateway_url: str, *, authenticated: bool = True) -> dict:
+    service = {"url": gateway_url.rstrip("/")}
+    if authenticated:
+        service["headers"] = {"X-Operator-API-Key": "${ACR_BUNDLE_API_KEY}"}
+    return {
+        "services": {"acr_control_plane": service},
+        "bundles": {
+            "acr_active_runtime": {
+                "service": "acr_control_plane",
+                "resource": f"/acr/policy-bundles/{core_identity()['core_id']}/active.tar.gz",
+                "polling": {"min_delay_seconds": 2, "max_delay_seconds": 5},
+            }
+        },
+    }
+
+
+def export_bundle(
+    output: Path,
+    extensions: Path | None = None,
+    *,
+    gateway_url: str = "http://localhost:8000",
+    authenticated: bool = True,
+    replace: bool = False,
+) -> dict:
+    payloads = {**managed_core_files(), **extension_files(extensions)}
+    archive, manifest = assemble_bundle(payloads)
+    output.mkdir(parents=True, exist_ok=True)
+    artifacts = {
+        "bundle.tar.gz": archive,
+        "manifest.json": canonical_json(manifest) + b"\n",
+        "opa-config.yaml": canonical_json(opa_config(gateway_url, authenticated=authenticated))
+        + b"\n",
+    }
+    # Never silently replace a prior release or operator artifact.
+    for name, payload in artifacts.items():
+        target = output / name
+        if not replace and target.exists() and target.read_bytes() != payload:
+            raise ValueError(
+                f"Refusing to overwrite different artifact: {target}; use a fresh directory"
+            )
+    for name, payload in artifacts.items():
+        target = output / name
+        if replace or not target.exists():
+            temporary = output / f".{name}.{os.getpid()}.tmp"
+            try:
+                temporary.write_bytes(payload)
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+    return manifest
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    export = commands.add_parser("export")
+    export.add_argument("--output", type=Path, required=True)
+    export.add_argument("--extensions", type=Path)
+    export.add_argument("--gateway-url", default="http://localhost:8000")
+    export.add_argument("--no-auth", action="store_true")
+    export.add_argument(
+        "--replace", action="store_true", help="Replace only generated output files"
+    )
+    commands.add_parser("identity")
+    args = parser.parse_args()
+    try:
+        result = (
+            export_bundle(
+                args.output,
+                args.extensions,
+                gateway_url=args.gateway_url,
+                authenticated=not args.no_auth,
+                replace=args.replace,
+            )
+            if args.command == "export"
+            else core_identity()
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    print(json.dumps(result, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from acr.common.errors import PolicyReleaseNotFoundError, PolicyValidationError
 from acr.db.models import PolicyDraftRecord, PolicyReleaseRecord
 from acr.policy_studio.bundles import build_policy_bundle
+from acr.policy_studio.core_bundle import validate_extension
 from acr.policy_studio.models import PolicyValidationResponse
 from acr.policy_studio.publisher import publish_active_policy_bundle, publish_policy_bundle
 
@@ -27,8 +28,10 @@ def validate_policy_draft_record(record: PolicyDraftRecord) -> PolicyValidationR
         issues.append("Manifest must include at least one allowed tool")
     if not record.rego_policy.strip():
         issues.append("Rego policy cannot be empty")
-    if "package acr" not in record.rego_policy:
-        issues.append("Rego policy must declare 'package acr'")
+    try:
+        validate_extension(record.rego_policy, name=record.agent_id)
+    except ValueError as exc:
+        issues.append(str(exc))
     if wizard.get("escalate_tool") and "escalate" not in record.rego_policy:
         warnings.append(
             "Wizard defines an escalation tool but generated policy does not include an escalate rule"
@@ -72,6 +75,10 @@ async def activate_policy_release(
     actor: str,
 ) -> PolicyReleaseRecord:
     record = await get_policy_release(db, release_id)
+    try:
+        validate_extension(record.rego_policy, name=record.agent_id)
+    except ValueError as exc:
+        raise PolicyValidationError(str(exc)) from exc
 
     active_result = await db.execute(
         select(PolicyReleaseRecord).where(

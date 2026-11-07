@@ -7,6 +7,7 @@ import tarfile
 from httpx import AsyncClient
 
 from acr.config import settings
+from acr.policy_studio.core_bundle import core_identity
 
 
 class TestPolicyDraftAPI:
@@ -310,5 +311,5 @@ class TestPolicyDraftAPI:
         discovery = discovery_resp.json()
         assert (
             discovery["bundles"]["acr_active_runtime"]["resource"]
-            == "/acr/policy-bundles/active.tar.gz"
+            == f"/acr/policy-bundles/{core_identity()['core_id']}/active.tar.gz"
         )

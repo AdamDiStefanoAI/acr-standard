@@ -1,0 +1,11 @@
+# Services-only Python integration tests. Static aggregate replaces polling;
+# never combine this override with production or Policy Studio lifecycle tests.
+services:
+  opa:
+    command:
+      - run
+      - --server
+      - --addr=0.0.0.0:8181
+      - --log-format=json
+      - --bundle
+      - /managed/bundle.tar.gz

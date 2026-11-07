@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     # ── OPA ───────────────────────────────────────────────────────────────────
     opa_url: str = "http://localhost:8181"
+    policy_extension_dir: str = ""
 
     # ── Kill switch ───────────────────────────────────────────────────────────
     killswitch_url: str = "http://localhost:8443"

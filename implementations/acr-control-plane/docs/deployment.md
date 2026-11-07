@@ -79,37 +79,18 @@ docker run --env-file .env acr-gateway sh -c "PYTHONPATH=/app/src alembic upgrad
 
 ### OPA runtime bundle mode
 
-For production, prefer OPA bundle/discovery mode over mounting the local `./policies` directory.
-Point OPA at the control plane’s discovery document so activated GUI releases become the live policy set.
+Use the release-paired managed bundle configuration described in
+[Managed policy upgrades](managed-policy-upgrades.md). The gateway wheel/image
+contains the matching core policies, combines them with preserved operator files
+and active Studio releases, and serves a core-qualified authenticated bundle URL.
+OPA runs as a gateway sidecar in Kubernetes and polls its paired gateway directly.
+The former raw JSON discovery endpoint is not an OPA discovery bundle; do not
+configure it as `discovery.resource`.
 
-Example OPA startup:
-
-```bash
-opa run \
-  --server \
-  --addr=0.0.0.0:8181 \
-  --log-format=json \
-  --set=services.acr.url=http://acr-gateway:8000 \
-  --set=bundles.acr_active_runtime.service=acr \
-  --set=bundles.acr_active_runtime.resource=/acr/policy-bundles/active.tar.gz
-```
-
-Or use the discovery document directly:
-
-```bash
-opa run \
-  --server \
-  --addr=0.0.0.0:8181 \
-  --log-format=json \
-  --set=services.acr.url=http://acr-gateway:8000 \
-  --set=discovery.resource=/acr/policy-bundles/discovery.json
-```
-
-This mode gives you:
-- immutable published releases
-- explicit operator activation
-- one aggregate active bundle for all live agents
-- no manual per-agent OPA wiring
+The gateway does not become ready or authorize actions until OPA has loaded its
+matching core. Bundle delivery remains available during this startup phase, so
+readiness cannot deadlock bundle delivery. Follow the one-time migration before
+replacing legacy filesystem mounts.
 
 ### Production guardrails
 

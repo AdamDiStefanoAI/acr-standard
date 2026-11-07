@@ -1,4 +1,3 @@
-# Default deny all traffic in acr-system namespace
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -7,10 +6,10 @@ metadata:
 spec:
   podSelector: {}
   policyTypes:
-    - Ingress
-    - Egress
+  - Ingress
+  - Egress
+  egress: []
 ---
-# Gateway: allow ingress from ingress-controller namespace, egress to postgres/redis/opa
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -21,56 +20,43 @@ spec:
     matchLabels:
       app: acr-gateway
   policyTypes:
-    - Ingress
-    - Egress
+  - Ingress
+  - Egress
   ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: ingress-controller
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-controller
   egress:
-    # DNS resolution
-    - to:
-        - namespaceSelector: {}
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    # PostgreSQL
-    - to:
-        - podSelector:
-            matchLabels:
-              app: postgres
-      ports:
-        - protocol: TCP
-          port: 5432
-    # Redis
-    - to:
-        - podSelector:
-            matchLabels:
-              app: redis
-      ports:
-        - protocol: TCP
-          port: 6379
-    # OPA
-    - to:
-        - podSelector:
-            matchLabels:
-              app: acr-opa
-      ports:
-        - protocol: TCP
-          port: 8181
-    # Killswitch
-    - to:
-        - podSelector:
-            matchLabels:
-              app: acr-killswitch
-      ports:
-        - protocol: TCP
-          port: 8443
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - podSelector:
+        matchLabels:
+          app: postgres
+    ports:
+    - protocol: TCP
+      port: 5432
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+  - to:
+    - podSelector:
+        matchLabels:
+          app: acr-killswitch
+    ports:
+    - protocol: TCP
+      port: 8443
 ---
-# Killswitch: allow ingress from gateway only, egress to postgres/redis
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -81,69 +67,28 @@ spec:
     matchLabels:
       app: acr-killswitch
   policyTypes:
-    - Ingress
-    - Egress
+  - Ingress
+  - Egress
   ingress:
-    - from:
-        - podSelector:
-            matchLabels:
-              app: acr-gateway
-      ports:
-        - protocol: TCP
-          port: 8443
+  - from:
+    - podSelector:
+        matchLabels:
+          app: acr-gateway
+    ports:
+    - protocol: TCP
+      port: 8443
   egress:
-    # DNS resolution
-    - to:
-        - namespaceSelector: {}
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    # Redis
-    - to:
-        - podSelector:
-            matchLabels:
-              app: redis
-      ports:
-        - protocol: TCP
-          port: 6379
----
-# OPA: allow ingress from gateway only, no external egress
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: acr-opa-netpol
-  namespace: acr-system
-spec:
-  podSelector:
-    matchLabels:
-      app: acr-opa
-  policyTypes:
-    - Ingress
-    - Egress
-  ingress:
-    - from:
-        - podSelector:
-            matchLabels:
-              app: acr-gateway
-      ports:
-        - protocol: TCP
-          port: 8181
-  egress:
-    # DNS resolution
-    - to:
-        - namespaceSelector: {}
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    # Allow OPA to fetch bundles from gateway
-    - to:
-        - podSelector:
-            matchLabels:
-              app: acr-gateway
-      ports:
-        - protocol: TCP
-          port: 8000
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379

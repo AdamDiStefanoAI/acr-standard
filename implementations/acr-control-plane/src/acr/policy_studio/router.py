@@ -5,8 +5,10 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from acr.common.operator_auth import OperatorPrincipal, require_operator_roles
+from acr.config import settings
 from acr.db.database import get_db
 from acr.policy_studio import service
+from acr.policy_studio.core_bundle import core_identity
 from acr.policy_studio.distribution import build_active_runtime_bundle, build_opa_discovery_document
 from acr.policy_studio.models import (
     PolicyBundleResponse,
@@ -202,7 +204,9 @@ _bundle_roles = require_operator_roles("agent_admin", "security_admin", "auditor
 
 
 @bundle_router.get("/active.tar.gz")
+@bundle_router.get("/{core_id}/active.tar.gz")
 async def get_active_runtime_bundle(
+    core_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     principal: OperatorPrincipal = Depends(_bundle_roles),
 ) -> Response:
@@ -213,14 +217,20 @@ async def get_active_runtime_bundle(
     that let OPA poll directly may set REQUIRE_BUNDLE_AUTH=false and rely on
     network-level access control instead.  Auth is the safer default.
     """
+    if core_id is not None and core_id != core_identity()["core_id"]:
+        return Response(status_code=404)
     records = await list_active_policy_releases(db)
-    artifact = build_active_runtime_bundle(records)
+    artifact = build_active_runtime_bundle(
+        records, extensions=settings.policy_extension_dir or None
+    )
     return Response(
         content=artifact.bytes_data,
         media_type=artifact.content_type,
         headers={
             "Content-Disposition": f'attachment; filename="{artifact.filename}"',
             "X-Policy-Bundle-Sha256": artifact.sha256,
+            "ETag": f'"{artifact.sha256}"',
+            "Cache-Control": "no-cache",
         },
     )
 
@@ -230,8 +240,9 @@ async def get_opa_discovery_document(
     request: Request,
     principal: OperatorPrincipal = Depends(_bundle_roles),
 ) -> JSONResponse:
-    """OPA discovery document for bundle service configuration.
+    """Operator-readable OPA configuration, not an OPA discovery bundle.
 
+    Use this as a config file; do not point OPA's discovery plugin at JSON.
     Requires operator authentication by default (settings.require_bundle_auth).
     See active.tar.gz endpoint for the auth/network-policy trade-off notes.
     """

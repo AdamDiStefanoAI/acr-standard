@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import re
-import tarfile
 from dataclasses import dataclass
-from pathlib import Path
 
 from acr.db.models import PolicyReleaseRecord
+from acr.policy_studio.core_bundle import (
+    assemble_bundle,
+    core_sources,
+    extension_files,
+    managed_core_files,
+    opa_config,
+    validate_extension,
+)
 
 _RULE_HEAD_RE = re.compile(r"^\s*[^#\s].*\sif\s\{\s*$")
 
@@ -32,14 +37,7 @@ def _scoped_rego_policy(*, agent_id: str, rego_policy: str) -> str:
 
 
 def _policy_bytes(filename: str) -> bytes:
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        candidate = parent / "policies" / "acr" / filename
-        if candidate.exists():
-            return candidate.read_bytes()
-    raise FileNotFoundError(
-        f"Unable to locate policies/acr/{filename} from policy_studio/distribution.py"
-    )
+    return core_sources()[filename]
 
 
 def _common_policy_bytes() -> bytes:
@@ -52,47 +50,43 @@ def _content_safety_policy_bytes() -> bytes:
 
 def build_active_runtime_bundle(
     active_releases: list[PolicyReleaseRecord],
+    *,
+    extensions: str | None = None,
 ) -> RuntimeBundleArtifact:
-    buffer = io.BytesIO()
-    active_agents = sorted({record.agent_id for record in active_releases})
-
-    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-        files: dict[str, bytes] = {
-            "bundle/common.rego": _common_policy_bytes(),
-            "bundle/content_safety.rego": _content_safety_policy_bytes(),
-            "bundle/metadata.json": json.dumps(
+    active_releases = sorted(
+        active_releases, key=lambda record: (record.agent_id, record.release_id)
+    )
+    if len({record.agent_id for record in active_releases}) != len(active_releases):
+        raise ValueError("Multiple active releases for the same agent")
+    payloads = {**managed_core_files(), **extension_files(extensions)}
+    payloads["bundle/metadata.json"] = json.dumps(
+        {
+            "type": "acr-active-runtime-bundle",
+            "active_release_count": len(active_releases),
+            "active_agents": sorted({record.agent_id for record in active_releases}),
+            "releases": [
                 {
-                    "type": "acr-active-runtime-bundle",
-                    "active_release_count": len(active_releases),
-                    "active_agents": active_agents,
-                    "releases": [
-                        {
-                            "release_id": record.release_id,
-                            "agent_id": record.agent_id,
-                            "version": record.version,
-                            "activated_at": record.activated_at.isoformat()
-                            if record.activated_at
-                            else None,
-                        }
-                        for record in active_releases
-                    ],
-                },
-                indent=2,
-            ).encode(),
-        }
-
-        for record in active_releases:
-            files[f"bundle/agents/{record.agent_id}.rego"] = _scoped_rego_policy(
-                agent_id=record.agent_id,
-                rego_policy=record.rego_policy,
-            ).encode()
-
-        for name, payload in files.items():
-            info = tarfile.TarInfo(name=name)
-            info.size = len(payload)
-            tar.addfile(info, io.BytesIO(payload))
-
-    bytes_data = buffer.getvalue()
+                    "release_id": record.release_id,
+                    "agent_id": record.agent_id,
+                    "version": record.version,
+                    "activated_at": record.activated_at.isoformat()
+                    if record.activated_at
+                    else None,
+                }
+                for record in active_releases
+            ],
+        },
+        sort_keys=True,
+    ).encode()
+    for record in active_releases:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", record.agent_id) or record.agent_id in {".", ".."}:
+            raise ValueError("Unsafe agent ID in runtime bundle")
+        validate_extension(record.rego_policy, name=record.agent_id)
+        payloads[f"bundle/agents/{record.agent_id}.rego"] = _scoped_rego_policy(
+            agent_id=record.agent_id,
+            rego_policy=record.rego_policy,
+        ).encode()
+    bytes_data, _ = assemble_bundle(payloads)
     return RuntimeBundleArtifact(
         filename="acr-active-runtime.tar.gz",
         content_type="application/gzip",
@@ -102,16 +96,5 @@ def build_active_runtime_bundle(
 
 
 def build_opa_discovery_document(*, service_base_url: str) -> dict:
-    return {
-        "services": {
-            "acr_control_plane": {
-                "url": service_base_url.rstrip("/"),
-            }
-        },
-        "bundles": {
-            "acr_active_runtime": {
-                "service": "acr_control_plane",
-                "resource": "/acr/policy-bundles/active.tar.gz",
-            }
-        },
-    }
+    # A configuration document for operators, NOT the OPA discovery protocol.
+    return opa_config(service_base_url)

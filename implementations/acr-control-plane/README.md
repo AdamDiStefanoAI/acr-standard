@@ -353,7 +353,9 @@ ACR_ENV=test python -m pytest tests/ --ignore=tests/integration -v --cov=src/acr
 ### Run without the full Docker stack
 
 ```bash
-docker-compose up postgres redis opa acr-killswitch
+export OPERATOR_API_KEYS_JSON='{"dev-operator-key":{"subject":"dev-operator","roles":["agent_admin","approver","security_admin","auditor","killswitch_operator"]}}'
+export SERVICE_OPERATOR_API_KEY=dev-operator-key
+docker compose -f docker-compose.yml -f docker-compose.integration.yml up --build -d postgres redis opa acr-killswitch
 
 DATABASE_URL=postgresql+asyncpg://acr:acr_dev_password@localhost:5432/acr_control_plane \
 REDIS_URL=redis://localhost:6379/0 \
@@ -461,3 +463,7 @@ If the answer is "the prompt," "the app code," or "we’d catch it in logs," thi
 Apache 2.0. See [LICENSE](LICENSE).
 
 Based on the [ACR Framework specification](https://github.com/AdamDiStefanoAI/acr-standard).
+
+## Managed policy release upgrades
+
+The gateway image now includes its matching core OPA rules. Read [the migration and rollback guide](docs/managed-policy-upgrades.md) before updating an existing deployment. Operator policies stay separate, and readiness and execution fail closed until OPA reports the matching core. Compose requires an auditor-authorized `SERVICE_OPERATOR_API_KEY` also configured in `OPERATOR_API_KEYS_JSON`.

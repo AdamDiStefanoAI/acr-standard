@@ -1,0 +1,43 @@
+# Operator-owned; release upgrades must retain your customization of this ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: acr-operator-policies
+data:
+  customer_support.rego: "# ACR Customer Support Agent Policy\n# Example policy for\
+    \ the customer-support agent (from the ACR implementation guide)\npackage acr\n\
+    \nimport future.keywords.in\nimport future.keywords.if\nimport future.keywords.contains\n\
+    \n# \u2500\u2500 PII detection in email body \u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500\u2500\ndeny contains reason if {\n    input.action.tool_name == \"send_email\"\
+    \n    body := input.action.parameters.body\n    regex.match(`\\d{3}-\\d{2}-\\\
+    d{4}`, body)   # SSN pattern\n    reason := \"PII detected in outbound email:\
+    \ SSN pattern found \u2014 redact before sending\"\n}\n\ndeny contains reason\
+    \ if {\n    input.action.tool_name == \"send_email\"\n    body := input.action.parameters.body\n\
+    \    regex.match(`\\b(?:\\d{4}[- ]?){3}\\d{4}\\b`, body)   # Credit card pattern\n\
+    \    reason := \"PII detected in outbound email: credit card pattern found \u2014\
+    \ redact before sending\"\n}\n\n# \u2500\u2500 High-value refund escalation \u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\n# Refunds over $100 require human approval\
+    \ (escalate)\nescalate if {\n    input.action.tool_name == \"issue_refund\"\n\
+    \    amount := input.action.parameters.amount\n    amount > 100\n}\n\nescalate_queue\
+    \ := \"finance-approvals\" if {\n    input.action.tool_name == \"issue_refund\"\
+    \n    input.action.parameters.amount > 100\n}\n\nescalate_sla_minutes := 240 if\
+    \ {\n    input.action.tool_name == \"issue_refund\"\n    input.action.parameters.amount\
+    \ > 100\n}\n\n# \u2500\u2500 Billing database access denied \u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500\ndeny contains reason if {\n    input.action.tool_name in {\"query_billing_db\"\
+    , \"modify_billing\"}\n    reason := \"Customer support agents do not have billing\
+    \ database access\"\n}\n\n# \u2500\u2500 High-risk action block outside business\
+    \ hours \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\n# (demo rule \u2014 in production you would check time.now_ns())\n\
+    deny contains reason if {\n    input.action.tool_name == \"delete_customer\"\n\
+    \    reason := \"Customer deletion is a forbidden operation for support agents\"\
+    \n}\n"

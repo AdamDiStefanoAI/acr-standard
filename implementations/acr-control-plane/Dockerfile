@@ -20,7 +20,6 @@ COPY --from=builder /wheels /wheels
 RUN pip install --no-cache-dir --no-index --find-links=/wheels acr-control-plane \
     && rm -rf /wheels
 COPY src/ ./src/
-COPY policies/ ./policies/
 COPY alembic.ini ./
 # Migration entrypoint shared by the K8s init container, the docker-compose
 # `acr-migrate` one-shot service, and CI. Installed on PATH so it can be
