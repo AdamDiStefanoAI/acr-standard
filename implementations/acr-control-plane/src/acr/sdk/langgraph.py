@@ -61,7 +61,34 @@ def guard_tool(
     Wrap a local tool so ACR authorizes it before execution.
 
     This works well for LangGraph/LangChain tool functions even when the graph
-    itself is not tightly coupled to ACR-specific logic.
+    itself is not tightly coupled to ACR-specific logic. On an ``allow``
+    decision the local tool runs with the (possibly gateway-modified)
+    parameters; on a ``deny`` decision :class:`ACRDeniedError` is raised
+    before the local tool executes.
+
+    Example:
+        The fake sessions below stand in for a real ``ACRAgentSession``,
+        so this example runs with no network call:
+
+        >>> from acr.gateway.models import EvaluateResponse
+        >>> from acr.sdk.langgraph import guard_tool
+        >>> class _AllowSession:
+        ...     def evaluate_action(self, **kwargs):
+        ...         return EvaluateResponse(decision="allow")
+        >>> def add(a: int, b: int) -> int:
+        ...     \"\"\"Add two numbers.\"\"\"
+        ...     return a + b
+        >>> guarded = guard_tool(add, session=_AllowSession())
+        >>> guarded(a=2, b=3)
+        5
+        >>> class _DenySession:
+        ...     def evaluate_action(self, **kwargs):
+        ...         return EvaluateResponse(decision="deny", reason="policy blocked")
+        >>> denied = guard_tool(add, session=_DenySession())
+        >>> denied(a=1, b=2)
+        Traceback (most recent call last):
+        ...
+        acr.sdk.errors.ACRDeniedError: policy blocked
     """
     resolved_tool_name = tool_name or func.__name__
     resolved_description = description or inspect.getdoc(func)
