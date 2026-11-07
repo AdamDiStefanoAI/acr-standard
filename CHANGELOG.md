@@ -4,6 +4,14 @@ All notable changes to the ACR Standard documentation and repository are documen
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] - 2026-11-07
+
+### Added
+
+- Spec v1.2: default content-level guardrails codified in Pillar 2 (Behavioral Policy Enforcement). Shipped default policies must inspect tool-parameter content, not only tool names: three deterministic rule classes (destructive shell commands, path traversal, base64-encoded destructive payloads), decided at the tool-call boundary and recorded in the evidence record. Prompt injection is explicitly out of scope for these defaults.
+- Repository specification version 1.2.0, aligned with implementation release v1.2.0 (PR #47). The normative PDF remains v1.0.1 until a revised PDF is issued; see docs/README.md for the version scheme.
+- Version badge updated to 1.2.0.
+
 ## [1.0] - 2026-03
 
 ### Added
@@ -30,5 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Glossary expanded: Control Layer/Pillar, Policy Engine, Telemetry Schema, Kill Switch, Break-Glass, Purpose Binding, STRIKE mnemonic, ACR Maturity Level.
   - README: "Why ACR?" positioning (OWASP/MITRE-style), adoption and governance links, citation and branding section, implementations section updated with ADOPTION reference.
   - Pull request template for documentation and spec changes.
+
+[1.2.0]: https://github.com/AdamDiStefanoAI/acr-standard/releases/tag/v1.2.0
 
 [1.0]: https://github.com/AdamDiStefanoAI/acr-standard/releases/tag/v1.0

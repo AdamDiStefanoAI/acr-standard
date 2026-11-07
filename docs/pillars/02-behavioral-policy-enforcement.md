@@ -20,11 +20,13 @@ Translate governance policies into machine-enforceable runtime rules that constr
 - Pre-inference input validation
 - Post-inference output filtering
 - Per-action authorization for tool/API calls
+- Content-level inspection of tool parameters by default policies (spec v1.2)
 - Data classification and handling enforcement
 - Policy versioning and rollback
 - Policy conflict resolution
 
 ### Out of Scope
+- Prompt-injection detection by default policies (spec v1.2: explicitly out of scope; detecting injected instructions needs a dedicated detector)
 - Model training governance (pre-deployment)
 - Infrastructure access control (Layer 1: Identity Binding)
 - Anomaly detection (Layer 3: Drift Detection)
@@ -282,6 +284,22 @@ Total budget: <120ms for complete policy evaluation
 - Data minimization rules
 - Right-to-deletion support
 
+### Default content-level guardrails (spec v1.2)
+
+**Background.** Before v1.2, the shipped default policies were tool-name-level only: they checked `tool_name` against allowlists and never inspected what an allowlisted tool was asked to do. An operator who allowlisted a shell tool therefore got no out-of-the-box protection against destructive commands, encoded payloads, or path traversal (GitHub issue #46; independent evaluation 2026-10-19). The v1.2 defaults close the deterministic part of that gap.
+
+**Requirement.** Shipped default policies MUST inspect the content of tool parameters, not only the tool name. Inspection covers every string value in every tool parameter, at any depth (objects, arrays, nested objects), regardless of tool name. A content-level deny is decided at the tool-call boundary, before execution, and is recorded in the evidence record like any other policy decision (Pillar 4), with the rule class that fired.
+
+**Rule classes.** The defaults cover deterministic patterns only, in three classes:
+
+1. **Destructive shell commands.** `rm` with recursive and force flags on a protected target (filesystem root, home directory, or with `--no-preserve-root`); `mkfs` with a target; `dd` writing to a block device; the fork bomb; `chmod 777` on the filesystem root; shell redirection to a block device.
+2. **Path traversal.** `..` used as a path segment (for example `../../etc/passwd`).
+3. **Base64-encoded destructive payloads.** A whole string value that looks like base64 and decodes to printable text is re-checked against the destructive shell patterns.
+
+**Narrowness.** Each destructive rule requires the dangerous command AND its dangerous target, so ordinary commands such as `rm -rf ./build` or `chmod 777 myfile.txt` do not match. Where a pattern or a boundary was ambiguous, the conservative option (fewer false positives) was chosen. The reference implementation for these rules is `policies/acr/content_safety.rego`, with 26 OPA tests (17 deny, 9 allow) in `content_safety_test.rego`.
+
+**Explicit non-scope.** Prompt injection is OUT OF SCOPE for these defaults. No default rule claims to detect injected instructions. Detecting injected instructions needs a dedicated detector; operators who need prompt-injection protection must add one. The defaults are a floor, not complete protection: they cover the deterministic destructive patterns above and are not a substitute for per-tool parameter rules written by the operator.
+
 ## Enforcement Points
 
 ### Pre-Inference (Input Validation)
@@ -472,6 +490,7 @@ An ACR-compliant Behavioral Policy Enforcement implementation should satisfy:
 4. **Deny by Default:** Unpermitted actions blocked without explicit allow
 5. **Policy Logging:** Every policy decision recorded in audit trail
 6. **Versioned Policies:** Policies tracked with version control
+7. **Content-level defaults (spec v1.2):** Shipped default policies inspect tool-parameter content, not only tool names, and deny the three deterministic rule classes (destructive shell commands, path traversal, base64-encoded destructive payloads) at the tool-call boundary
 
 ### Recommended Features
 1. **Multiple Policy Types:** Supports rule-based, schema, and ML-based policies
@@ -525,4 +544,4 @@ An ACR-compliant Behavioral Policy Enforcement implementation should satisfy:
 
 **Previous:** [Identity & Purpose Binding](./01-identity-purpose-binding.md) | **Next:** [Autonomy Drift Detection](./03-autonomy-drift-detection.md)
 
-**ACR Framework v1.0** | [Home](../../README.md) | [All Pillars](./README.md)
+**ACR Standard v1.2** | [Home](../../README.md) | [All Pillars](./README.md)
