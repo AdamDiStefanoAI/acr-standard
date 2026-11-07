@@ -370,6 +370,33 @@ uvicorn acr.main:app --reload
 opa test policies/ -v
 ```
 
+### Default content-level guardrails
+
+The default policies (`policies/acr/common.rego` and
+`policies/acr/content_safety.rego`) are deny-by-default and tool-name-level:
+they only allow tools on the agent's allowlist. On top of that, the content
+safety defaults inspect every string value in every tool parameter, at any
+depth, regardless of tool name, and deny:
+
+- Destructive shell commands: `rm -rf` on `/`, `/*`, `~`, or `$HOME`
+  (including `--no-preserve-root`), `mkfs`, `dd` writing to a block device,
+  the fork bomb, `chmod 777` on `/`, and shell redirection to a block device.
+- Path traversal: `..` used as a path segment (for example `../../etc/passwd`).
+- Base64-encoded destructive payloads: values that look like base64 are
+  decoded and re-checked against the destructive shell patterns.
+
+What the defaults do NOT cover:
+
+- Prompt injection. Detecting injected instructions needs a dedicated
+  detector; these defaults make no claim to detect it.
+- Operator-specific rules for your own tools. The defaults protect the
+  common destructive cases; write per-tool parameter rules for anything
+  beyond that.
+
+The patterns are deliberately narrow (each destructive rule requires the
+dangerous command AND its dangerous target), so ordinary commands such as
+`rm -rf ./build` or `chmod 777 myfile.txt` are not blocked.
+
 ## Project Layout
 
 ```text
