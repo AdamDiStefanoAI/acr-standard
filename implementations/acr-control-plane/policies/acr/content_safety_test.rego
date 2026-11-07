@@ -9,7 +9,12 @@
 #   - legitimate calls are still ALLOWED, including the deliberate
 #     conservative boundaries (rm -rf on a relative target, "cd ..",
 #     dd to a regular file, redirection to /dev/null, benign base64).
-package acr
+# Keep tests out of data.acr: the gateway queries that entire runtime package.
+# File-mounted OPA development instances must not evaluate tests per request.
+package acr_test
+
+import data.acr.allow
+import data.acr.deny
 
 import future.keywords
 
@@ -162,4 +167,342 @@ test_allow_redirect_to_dev_null if {
 test_allow_chmod_named_file if {
 	allow with input as base_input("shell_exec", {"command": "chmod 777 myfile.txt"})
 	count(deny) == 0 with input as base_input("shell_exec", {"command": "chmod 777 myfile.txt"})
+}
+
+# Shell quoting and command-boundary regressions. These strings are only
+# policy inputs: no test executes a shell command.
+
+test_deny_quoted_protected_targets if {
+	every command in [
+		"rm -rf \"$HOME\"",
+		"rm -rf \"${HOME}\"",
+		"rm -rf \"$HOME/cache\"",
+		"rm -rf \"$HOME/cache\nname\"",
+		"rm -rf ~/\"cache\nname\"",
+		"rm -rf \"/\"",
+		"rm -rf '/'",
+		"rm -rf \"/*\"",
+		"rm -rf '/*'",
+		"rm -rf /\"\"",
+		"rm -rf \"\"/",
+		"rm -rf \\/",
+		"rm \"-rf\" \"/\"",
+		"/bin/rm -rf \"$HOME\"",
+		"sudo rm -rf \"$HOME\"",
+		"rm -r -f \"/\"",
+		"rm -f -r \"/\"",
+		"rm --recursive --force /",
+	] {
+		count(deny) > 0 with input as base_input("shell_exec", {"command": command})
+		not allow with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+test_deny_protected_targets_in_compounds if {
+	every command in [
+		"echo ready && rm -rf \"$HOME\"",
+		"ls /; rm -rf \"$HOME\"",
+		"rm -rf ./build || rm -rf \"$HOME\"",
+		"rm -rf ./build\nrm -rf /",
+		"rm -rf ./build & rm -rf /",
+		"rm -rf ./build | rm -rf /",
+		"(rm -rf /)",
+		"rm -rf \"./build;cache\" \"$HOME\"",
+		"rm -rf \"./build&&cache\" /",
+		"rm -rf ./build\\;cache /",
+		"rm -rf \\\n\"$HOME\"",
+		"rm -rf ./build # comment\nrm -rf /",
+	] {
+		count(deny) > 0 with input as base_input("shell_exec", {"command": command})
+		not allow with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+test_allow_separate_safe_commands if {
+	every command in [
+		"rm -rf ./build && ls /",
+		"rm -rf ./build; ls /",
+		"rm -rf ./build || ls /",
+		"rm -rf ./build | ls /",
+		"rm -rf ./build & ls /",
+		"rm -rf ./build\nls /",
+		"rm -rf ./build\r\nls /",
+		"ls / && rm -rf ./build",
+		"rm -rf ./build && echo --no-preserve-root",
+		"rm ./build; echo --no-preserve-root",
+		"dd if=/dev/zero of=./test.img && echo of=/dev/sda",
+		"dd if=/dev/zero of=./test.img\necho of=/dev/sda",
+		"chmod 777 myfile.txt && ls /",
+		"rm -rf ./build # / --no-preserve-root",
+		"rm -rf ./build </",
+	] {
+		allow with input as base_input("shell_exec", {"command": command})
+		count(deny) == 0 with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+test_allow_literal_and_nonprotected_operands if {
+	every command in [
+		"rm -rf '$HOME'",
+		"rm -rf '${HOME}'",
+		"rm -rf \"\\$HOME\"",
+		"rm -rf \\$HOME",
+		"rm -rf \"~\"",
+		"rm -rf '~'",
+		"rm -rf \\~",
+		"rm -rf \"$HOMELESS\"",
+		"rm -rf \"/tmp/myapp\"",
+		"rm -rf \"./build /\"",
+		"rm -rf \"./build; /\"",
+		"rm -rf -- --no-preserve-root",
+		"rm -- -rf /",
+		"rm -r ./build -f-not-an-option /tmp/myapp",
+	] {
+		allow with input as base_input("shell_exec", {"command": command})
+		count(deny) == 0 with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+test_deny_quoted_other_destructive_targets if {
+	every command in [
+		"mkfs.ext4 \"/dev/sda1\"",
+		"mkfs '/dev/sda1'",
+		"dd if=/dev/zero of=\"/dev/sda\"",
+		"dd if=/dev/zero 'of=/dev/sda'",
+		"chmod -R 777 \"/\"",
+		"chmod 777 '/'",
+		"cat log.txt > \"/dev/sda\"",
+		"cat log.txt >> '/dev/sda'",
+		"cat log.txt 2> \"/dev/sda\"",
+	] {
+		count(deny) > 0 with input as base_input("shell_exec", {"command": command})
+		not allow with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+test_allow_quoted_safe_device_targets if {
+	every command in [
+		"dd if=/dev/zero of=\"/tmp/test.img\"",
+		"dd if=/dev/zero of=\"/dev/null\"",
+		"cat log.txt > \"/dev/null\"",
+		"chmod 777 \"myfile.txt\"",
+	] {
+		allow with input as base_input("shell_exec", {"command": command})
+		count(deny) == 0 with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+test_deny_traversal_arguments if {
+	every command in [
+		"cat ../secret.txt",
+		"cat \"../secret.txt\"",
+		"cat '../secret.txt'",
+		"cat ..\\secret.txt",
+		"cat \"..\\secret.txt\"",
+		"cat --input=../secret.txt",
+		"cat --input=\"../secret.txt\"",
+		"cat ./folder/.. ",
+		"cat \"./folder/..\"",
+		"cat folder/../secret.txt",
+		"cat ../secret.txt && echo done",
+		"cat;cat ../secret.txt",
+		"../secret.txt",
+		"..\\secret.txt",
+	] {
+		count(deny) > 0 with input as base_input("shell_exec", {"command": command})
+		not allow with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+test_allow_traversal_boundary_lookalikes if {
+	every command in [
+		"cd ..",
+		"cd \"..\"",
+		"cd '..'",
+		"echo ...",
+		"cat file..txt",
+		"cat .../secret.txt",
+		"cat dir..name/secret.txt",
+		"cat \"file..txt\"",
+	] {
+		allow with input as base_input("shell_exec", {"command": command})
+		count(deny) == 0 with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+# Whole-value base64 uses the same quote-aware checks and command boundaries.
+test_deny_base64_quoted_home if {
+	encoded := base64.encode("rm -rf \"$HOME\"")
+	count(deny) > 0 with input as base_input("run_command", {"payload": encoded})
+	not allow with input as base_input("run_command", {"payload": encoded})
+}
+
+test_allow_base64_separate_safe_commands if {
+	encoded := base64.encode("rm -rf ./build && ls /")
+	allow with input as base_input("shell_exec", {"payload": encoded})
+	count(deny) == 0 with input as base_input("shell_exec", {"payload": encoded})
+}
+
+test_deny_nested_quoted_home_any_tool if {
+	params := {"outer": [{"command": "rm -rf \"$HOME\""}]}
+	count(deny) > 0 with input as base_input("send_email", params)
+	not allow with input as base_input("send_email", params)
+}
+
+test_deny_nested_traversal_argument_any_tool if {
+	params := {"outer": [{"command": "cat ../secret.txt"}]}
+	count(deny) > 0 with input as base_input("send_email", params)
+	not allow with input as base_input("send_email", params)
+}
+
+# Descriptor duplication and literal carriage returns do not terminate a shell
+# invocation. Keep flags and targets connected across ordinary redirections.
+test_deny_redirections_inside_destructive_command if {
+	every command in [
+		"rm -rf 2>&1 $HOME",
+		"rm -rf 2>&1 \"$HOME\"",
+		"rm -rf 0<&3 /",
+		"rm -rf &>/tmp/log /",
+		"rm -rf &>>/tmp/log /",
+		"rm -rf >|/tmp/log /",
+		"dd 2>&1 of=/dev/sda",
+		"chmod 777 2>&1 /",
+		"rm -rf ./build\r $HOME",
+		"cat log.txt >&/dev/sda",
+		"cat log.txt &>/dev/sda",
+		"cat log.txt &>>/dev/sda",
+		"cat log.txt >|/dev/sda",
+	] {
+		count(deny) > 0 with input as base_input("shell_exec", {"command": command})
+		not allow with input as base_input("shell_exec", {"command": command})
+		encoded := base64.encode(command)
+		not allow with input as base_input("shell_exec", {"command": encoded})
+	}
+}
+
+test_allow_safe_descriptor_redirection if {
+	every command in [
+		"rm -rf ./build 2>&1 && ls /",
+		"rm -rf ./build &>/tmp/log; ls /",
+		"rm -rf ./build >|/tmp/log; ls /",
+		"dd 2>&1 of=./test.img; echo of=/dev/sda",
+		"cat log.txt &>/dev/null",
+	] {
+		allow with input as base_input("shell_exec", {"command": command})
+		count(deny) == 0 with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+# Quoting cannot assemble a new variable name or activate a literal tilde.
+test_allow_mixed_quoted_literal_home if {
+	every command in [
+		`rm -rf ""~`,
+		`rm -rf ~"/"`,
+		`rm -rf ~''/`,
+		`rm -rf $H""OME`,
+		`rm -rf "$H"OME`,
+		`rm -rf "$"HOME`,
+		`rm -rf $HO'ME'`,
+		`rm -rf ${H}OME`,
+	] {
+		allow with input as base_input("shell_exec", {"command": command})
+		count(deny) == 0 with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+test_deny_active_home_expansion_with_quoted_suffix if {
+	every command in [
+		`rm -rf $HOME""`,
+		`rm -rf "$HOME"/`,
+		`rm -rf ${HOME}''`,
+		`rm -rf ~/""`,
+	] {
+		not allow with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+# The chmod mode is the first non-option operand, not a later filename.
+test_allow_chmod_777_filename if {
+	every command in [
+		`chmod 755 777 /`,
+		`chmod -R 755 777 /`,
+		`chmod -- 755 777 /`,
+		`chmod --reference=777 /`,
+		`chmod --reference 777 /`,
+		`chmod -w 777 /`,
+		`chmod -R -w 777 /`,
+	] {
+		allow with input as base_input("shell_exec", {"command": command})
+		count(deny) == 0 with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+test_deny_chmod_actual_mode_with_options if {
+	every command in [
+		`chmod -- 777 /`,
+		`chmod -R -- 777 /`,
+		`chmod 2>&1 777 /`,
+		`chmod -R 2>/tmp/log 777 /`,
+	] {
+		not allow with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+# Quote removal joins path pieces, but quoted boundaries are not path separators.
+test_deny_concatenated_quoted_traversal if {
+	every command in [
+		`cat '..'/secret.txt`,
+		`cat "."'./secret.txt'`,
+		`cat --input='..'/secret.txt`,
+		`cat 'folder/..'/secret.txt`,
+		`cat "folder/.."`,
+		`sh -c 'cat ".."/secret.txt'`,
+	] {
+		not allow with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+test_allow_quoted_traversal_lookalike_suffix if {
+	every command in [
+		`cat "./folder/.."suffix`,
+		`cat './folder/..'suffix`,
+		`cat ".."suffix/secret.txt`,
+	] {
+		allow with input as base_input("shell_exec", {"command": command})
+		count(deny) == 0 with input as base_input("shell_exec", {"command": command})
+	}
+}
+
+test_deny_explicit_shell_command_strings if {
+	every command in [
+		`sh -c 'rm -rf $HOME'`,
+		`sh -c 'rm -rf $HOME;'`,
+		`bash -c 'rm -rf $HOME '`,
+		`sh -c 'rm -rf "$HOME"'`,
+		`bash -lc 'rm -rf /'`,
+		`sh -o errexit -c 'rm -rf /'`,
+		`sudo /bin/sh -c 'dd of=/dev/sda'`,
+		`sh -c "chmod 777 /"`,
+	] {
+		not allow with input as base_input("shell_exec", {"command": command})
+		encoded := base64.encode(command)
+		not allow with input as base_input("shell_exec", {"command": encoded})
+	}
+}
+
+test_allow_explicit_safe_shell_command_strings if {
+	every command in [
+		`sh -c 'rm -rf ./build && ls /'`,
+		`sh -c 'rm -rf \$HOME'`,
+		`sh -c 'rm -rf "~"'`,
+		`sh -c 'chmod 755 777 /'`,
+		`sh -c 'printf hello' 'rm -rf /'`,
+		`sh -c 'printf hello' -c 'rm -rf /'`,
+		`sh -c 'printf hello' sh -c 'rm -rf /'`,
+		`sh script.sh -c 'rm -rf /'`,
+		`sh -- -c 'rm -rf /'`,
+	] {
+		allow with input as base_input("shell_exec", {"command": command})
+		count(deny) == 0 with input as base_input("shell_exec", {"command": command})
+	}
 }

@@ -381,7 +381,14 @@ depth, regardless of tool name, and deny:
 - Destructive shell commands: `rm -rf` on `/`, `/*`, `~`, or `$HOME`
   (including `--no-preserve-root`), `mkfs`, `dd` writing to a block device,
   the fork bomb, `chmod 777` on `/`, and shell redirection to a block device.
-- Path traversal: `..` used as a path segment (for example `../../etc/passwd`).
+  Ordinary quoted operands such as `rm -rf "$HOME"`, `rm -rf "/"`, and
+  `dd of="/dev/sda"` are included. Literal home spellings such as
+  `rm -rf '$HOME'` and `rm -rf "~"` do not expand and are not home targets.
+  One explicit literal `sh`/`bash`-family `-c` command string is also inspected,
+  for example `sh -c 'rm -rf "$HOME"'`.
+- Path traversal: `..` in standalone paths or path-bearing arguments (for
+  example `../../etc/passwd`, `cat ../secret.txt`, and `cat "../secret.txt"`).
+  Bare `..` arguments such as `cd ..` remain outside this heuristic.
 - Base64-encoded destructive payloads: values that look like base64 are
   decoded and re-checked against the destructive shell patterns.
 
@@ -389,13 +396,32 @@ What the defaults do NOT cover:
 
 - Prompt injection. Detecting injected instructions needs a dedicated
   detector; these defaults make no claim to detect it.
+- Full shell interpretation. These are lexical checks, not a shell parser
+  or sandbox. They do not resolve arbitrary variable expansion, command
+  substitution, aliases, script files, nested interpreters, or dynamically
+  constructed commands, including `-c` strings changed by outer-shell expansion.
 - Operator-specific rules for your own tools. The defaults protect the
   common destructive cases; write per-tool parameter rules for anything
   beyond that.
 
 The patterns are deliberately narrow (each destructive rule requires the
-dangerous command AND its dangerous target), so ordinary commands such as
-`rm -rf ./build` or `chmod 777 myfile.txt` are not blocked.
+dangerous command AND its dangerous target in the same command segment),
+so ordinary commands such as `rm -rf ./build`, `chmod 777 myfile.txt`, and
+`rm -rf ./build && ls /` are not blocked. Unquoted `;`, `&&`, `||`, `|`, `&`,
+parentheses, and newlines separate command segments; separators inside
+quoted or escaped operands do not. These same checks apply after whole-value
+base64 decoding. This does not make unrestricted shell execution safe.
+
+### Upgrading the control plane and policies
+
+The Python package and OPA policies are separate deployment artifacts. A
+`pip install --upgrade acr-control-plane` updates Python dependencies and code,
+but does not update the policies loaded by your OPA service. Deploy the
+`policies/` directory or a rebuilt policy bundle from the matching release tag
+as well, preserving and retesting any operator-specific rules. The Compose
+example mounts `./policies` from the source checkout into OPA; updating only
+the gateway image does not update that mount. Verify policy decisions against
+the running OPA service before resuming agent execution.
 
 ## Project Layout
 
