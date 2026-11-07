@@ -21,7 +21,8 @@ dependencies = [
     "pydantic-settings>=2.6.0,<3.0.0",
 
     # Database — async SQLAlchemy + asyncpg
-    "sqlalchemy[asyncio]>=2.0.36,<3.0.0",
+    # The pinned SQLAlchemy instrumentor supports the 2.0 series, not 2.1.
+    "sqlalchemy[asyncio]>=2.0.36,<2.1.0",
     "asyncpg>=0.30.0,<1.0.0",
     "alembic>=1.14.0,<2.0.0",
 
@@ -45,7 +46,8 @@ dependencies = [
     # This reviewed family permits the CVE-2026-114603 fix in API 1.45.1.
     "opentelemetry-instrumentation-fastapi==0.66b1",
     "opentelemetry-instrumentation-httpx==0.66b1",
-    "opentelemetry-instrumentation-sqlalchemy==0.66b1",
+    # Enforce the instrumentor's declared compatibility at dependency resolution.
+    "opentelemetry-instrumentation-sqlalchemy[instruments]==0.66b1",
 
     # Circuit breakers
     "aiobreaker>=1.1",
