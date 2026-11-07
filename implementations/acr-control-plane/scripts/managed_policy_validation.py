@@ -20,6 +20,7 @@ OUT = Path("managed-policy-evidence")
 OUT.mkdir(exist_ok=True)
 OPERATOR = {"X-Operator-API-Key": "ci-operator-only"}
 BASE = "http://127.0.0.1:8000"
+_agent_access_token: str | None = None
 http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 MANIFEST = {
     "agent_id": "upgrade-ci",
@@ -67,18 +68,32 @@ def wait_ready():
     raise AssertionError("Gateway did not become ready")
 
 
+def agent_token(*, refresh=False):
+    """Reuse the legitimate issued token across probes and release changes."""
+    global _agent_access_token
+    if _agent_access_token is None or refresh:
+        status, token = request("POST", "/acr/agents/upgrade-ci/token", {}, OPERATOR)
+        assert status == 200, token
+        _agent_access_token = token["access_token"]
+    return _agent_access_token
+
+
 def evaluate(parameters):
-    status, token = request("POST", "/acr/agents/upgrade-ci/token", {}, OPERATOR)
-    assert status == 200, token
-    return request(
-        "POST",
-        "/acr/evaluate",
-        {
-            "agent_id": "upgrade-ci",
-            "action": {"tool_name": "query_customer_db", "parameters": parameters},
-        },
-        {"Authorization": "Bearer " + token["access_token"]},
-    )
+    body = {
+        "agent_id": "upgrade-ci",
+        "action": {"tool_name": "query_customer_db", "parameters": parameters},
+    }
+    response = request("POST", "/acr/evaluate", body, {"Authorization": "Bearer " + agent_token()})
+    # A denied policy decision (403), stale core, or unavailable dependency must
+    # never mint a new token. Retry only an actual authentication failure, once.
+    if response[0] == 401:
+        response = request(
+            "POST",
+            "/acr/evaluate",
+            body,
+            {"Authorization": "Bearer " + agent_token(refresh=True)},
+        )
+    return response
 
 
 def assert_policy(label):

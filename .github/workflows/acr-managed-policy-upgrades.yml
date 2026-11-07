@@ -1,5 +1,10 @@
 name: ACR managed policy upgrade validation
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'implementations/acr-control-plane/**'
+      - '.github/workflows/acr-managed-policy-upgrades.yml'
   pull_request:
     paths:
       - 'implementations/acr-control-plane/**'
