@@ -261,11 +261,42 @@ destructive_shell_command(value) if {
 # the outer argument and let the same lexical rules examine the inner command.
 # This is deliberately bounded: nested interpreters and dynamic scripts still
 # require operator-specific controls.
+first_shell_arguments(value) := {args |
+	command := shell_commands(value)[_]
+	executables := {i |
+		some i, word in command
+		regex.match(`(^|/)(ba|da|k|z)?sh$`, shell_word(word))
+	}
+	executable := min(executables)
+	args := [shell_word(command[j]) |
+		some j
+		command[j]
+		j > executable
+		shell_operand(command, j)
+	]
+}
+
+shell_script_file_before(args, i) if {
+	some j, arg in args
+	j < i
+	not regex.match(`^[-+]`, arg)
+	not shell_option_value(args, j)
+}
+
+shell_option_value(args, i) if {
+	i > 0
+	args[i - 1] in {"-o", "-O", "+o", "+O"}
+}
+
 shell_values(value) := {value} | {script |
-	args := shell_arguments(value, `(ba|da|k|z)?sh`)[_]
-	some i, arg in args
-	shell_option(args, i)
-	regex.match(`^-[a-zA-Z]*c[a-zA-Z]*$`, arg)
+	args := first_shell_arguments(value)[_]
+	command_options := {j |
+		some j, arg in args
+		shell_option(args, j)
+		regex.match(`^-[a-zA-Z]*c[a-zA-Z]*$`, arg)
+	}
+	i := min(command_options)
+	not shell_script_file_before(args, i)
 	script := replace(replace(args[i + 1], "\\$", "$"), "\\~", "~")
 }
 

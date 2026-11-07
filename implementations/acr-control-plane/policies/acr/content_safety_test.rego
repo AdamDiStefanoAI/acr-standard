@@ -480,6 +480,7 @@ test_deny_explicit_shell_command_strings if {
 		`bash -c 'rm -rf $HOME '`,
 		`sh -c 'rm -rf "$HOME"'`,
 		`bash -lc 'rm -rf /'`,
+		`sh -o errexit -c 'rm -rf /'`,
 		`sudo /bin/sh -c 'dd of=/dev/sda'`,
 		`sh -c "chmod 777 /"`,
 	] {
@@ -496,6 +497,9 @@ test_allow_explicit_safe_shell_command_strings if {
 		`sh -c 'rm -rf "~"'`,
 		`sh -c 'chmod 755 777 /'`,
 		`sh -c 'printf hello' 'rm -rf /'`,
+		`sh -c 'printf hello' -c 'rm -rf /'`,
+		`sh -c 'printf hello' sh -c 'rm -rf /'`,
+		`sh script.sh -c 'rm -rf /'`,
 		`sh -- -c 'rm -rf /'`,
 	] {
 		allow with input as base_input("shell_exec", {"command": command})
