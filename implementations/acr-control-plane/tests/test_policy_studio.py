@@ -298,6 +298,7 @@ class TestPolicyDraftAPI:
         with tarfile.open(fileobj=tar_bytes, mode="r:gz") as bundle:
             names = set(bundle.getnames())
             assert "bundle/common.rego" in names
+            assert "bundle/content_safety.rego" in names
             assert "bundle/agents/runtime-bot-01.rego" in names
             metadata = json.loads(bundle.extractfile("bundle/metadata.json").read())
             assert metadata["active_agents"] == ["runtime-bot-01"]
