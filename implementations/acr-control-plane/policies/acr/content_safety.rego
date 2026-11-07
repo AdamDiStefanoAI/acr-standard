@@ -36,9 +36,9 @@
 # conservative option (fewer false positives) was chosen.
 package acr
 
-import future.keywords.in
-import future.keywords.if
 import future.keywords.contains
+import future.keywords.if
+import future.keywords.in
 
 # ── String parameter values ───────────────────────────────────────────────────
 # Every string value anywhere inside input.action.parameters, at any depth.
@@ -55,66 +55,145 @@ all_string_parameter_values contains value if {
 # Block device names covered: sd*, hd*, nvme*n*, vd*, xvd*, mmcblk*,
 # loop*, dm-*, md*, disk* (macOS), rdisk* (macOS raw disk).
 
-# rm with recursive + force flags, combined (-rf, -fr) or split (-r -f, -f -r).
-rm_recursive_force(value) if {
-	regex.match(`\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\b`, value)
+# Lex a deliberately small shell subset without executing or expanding it.
+# Quoted/escaped separators stay inside a word; only unquoted control
+# operators and LF newlines end a command. Descriptor redirections such as
+# 2>&1 are not separators. CR is a word character, as in POSIX shells.
+# Comments end at the next LF newline.
+# This is not a shell parser: substitutions, aliases, scripts and dynamically
+# constructed commands still require a tool-specific policy or sandbox.
+shell_tokens(value) := regex.find_n(
+	`#[^\n]*|(?:[^ \t\n'"\\;|&()<>]|\\[^\n]|"(?:\\[\s\S]|[^"\\])*"|'[^']*')+|[<>]+[&|]?|&>>?|&&|\|\||[;|&()\n]`,
+	replace(value, "\\\n", ""),
+	-1,
+)
+
+shell_separator(token) if {
+	regex.match(`^[;|&()\n]+$|^#`, token)
 }
 
-rm_recursive_force(value) if {
-	regex.match(`\brm\s+-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*\b`, value)
+# Compute separator offsets once rather than rescanning the token list for
+# each command. This keeps long compound inputs from quadratic grouping work.
+shell_commands(value) := {command |
+	tokens := shell_tokens(value)
+	separators := {i | some i, token in tokens; shell_separator(token)}
+	boundaries := sort({-1, count(tokens)} | separators)
+	some i, start in boundaries
+	end := boundaries[i + 1]
+	command := array.slice(tokens, start + 1, end)
+	count(command) > 0
 }
 
-rm_recursive_force(value) if {
-	regex.match(`\brm\s+-[a-zA-Z]*r[a-zA-Z]*\s+-[a-zA-Z]*f[a-zA-Z]*\b`, value)
+# Remove ordinary quoting and escapes while preserving literal $ and ~.
+# Keep literal home spellings escaped so they cannot become active
+# expansions: '$HOME', "\$HOME" and "~" name literal relative paths.
+shell_literal(value) := replace(replace(value, "$", "\\$"), "~", "\\~")
+
+shell_unquoted_part(part) := shell_literal(substring(part, 1, -1)) if {
+	startswith(part, "\\")
+} else := part
+
+shell_double_quoted_part(part) := shell_literal(substring(part, 1, -1)) if {
+	regex.match(`^\\[$\x60"\\]$`, part)
+} else := replace(part, "~", "\\~")
+
+shell_part(part) := shell_literal(substring(part, 1, count(part) - 2)) if {
+	startswith(part, "'")
+} else := concat("", [shell_double_quoted_part(piece) |
+	pieces := regex.find_n(`\\[\s\S]|[^\\]+`, substring(part, 1, count(part) - 2), -1)
+	piece := pieces[_]
+]) if {
+	startswith(part, "\"")
+} else := shell_unquoted_part(part)
+
+shell_word(word) := concat("", [shell_part(part) |
+	parts := regex.find_n(`'[^']*'|"(?:\\[\s\S]|[^"\\])*"|\\[\s\S]|[^'"\\]+`, word, -1)
+	part := parts[_]
+])
+
+# Redirection destinations are not command operands. Keep them available to
+# the separate block-device redirection rule below.
+shell_operand(command, i) if {
+	i > 0
+	not regex.match(`^([<>]+[&|]?|&>>?)$`, command[i])
+	not regex.match(`^([<>]+[&|]?|&>>?)$`, command[i - 1])
 }
 
-rm_recursive_force(value) if {
-	regex.match(`\brm\s+-[a-zA-Z]*f[a-zA-Z]*\s+-[a-zA-Z]*r[a-zA-Z]*\b`, value)
+# Scope every command/target pair to a single invocation, never the whole
+# parameter value. Absolute executable paths and prefixes such as sudo work.
+shell_arguments(value, executable) := {args |
+	command := shell_commands(value)[_]
+	some i, word in command
+	regex.match(sprintf(`(^|/)%s$`, [executable]), shell_word(word))
+	args := [shell_word(command[j]) |
+		some j
+		command[j]
+		j > i
+		shell_operand(command, j)
+	]
 }
 
-# A target that makes recursive force-remove destructive: filesystem root,
-# the home directory, or the --no-preserve-root safety override. A relative
-# target such as ./build or /tmp/myapp is deliberately NOT covered: removing
-# it is an ordinary cleanup, not host destruction.
-dangerous_rm_target(value) if {
-	regex.match(`--no-preserve-root`, value)
+shell_option(args, i) if {
+	args[i]
+	not option_terminated(args, i)
 }
 
-dangerous_rm_target(value) if {
-	regex.match(`\s/\*?(\s|$|;|\||&)`, value)
+option_terminated(args, i) if {
+	some j
+	args[j] == "--"
+	j < i
 }
 
-dangerous_rm_target(value) if {
-	regex.match(`\s~(\s|/|$|;|\||&)`, value)
+rm_recursive(args) if {
+	some i, arg in args
+	shell_option(args, i)
+	regex.match(`^(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)$`, arg)
 }
 
-dangerous_rm_target(value) if {
-	regex.match(`\s\$HOME(\s|/|$|;|\||&)`, value)
+rm_force(args) if {
+	some i, arg in args
+	shell_option(args, i)
+	regex.match(`^(-[a-zA-Z]*f[a-zA-Z]*|--force)$`, arg)
 }
 
-# True when the value contains a destructive shell command.
+# Home expansion is retained symbolically; never read the evaluator's HOME.
+# Relative targets such as ./build and /tmp/myapp remain ordinary cleanup.
+dangerous_rm_target(arg) if {
+	regex.match(`^(/\*?|~(/[\s\S]*)?|\$(HOME|\{HOME\})(/[\s\S]*)?)$`, arg)
+}
+
 destructive_shell(value) if {
-	rm_recursive_force(value)
-	dangerous_rm_target(value)
+	args := shell_arguments(value, "rm")[_]
+	rm_recursive(args)
+	rm_force(args)
+	some arg in args
+	dangerous_rm_target(arg)
 }
 
-# rm with the safety override is destructive regardless of flags or target.
+# Preserve the documented safety-override rule, but only for this rm's options.
 destructive_shell(value) if {
-	regex.match(`\brm\b`, value)
-	regex.match(`--no-preserve-root`, value)
+	args := shell_arguments(value, "rm")[_]
+	some i
+	args[i] == "--no-preserve-root"
+	shell_option(args, i)
 }
 
-# mkfs formats a filesystem; require a target path or flag so bare prose
-# mentioning mkfs does not match.
+# mkfs requires a path or flag, not a bare mention of the command.
 destructive_shell(value) if {
-	regex.match(`\bmkfs(\.[a-z0-9]+)?\s+(/\S+|-[a-zA-Z])`, value)
+	args := shell_arguments(value, `mkfs(\.[a-z0-9]+)?`)[_]
+	regex.match(`^(/\S+|-[a-zA-Z])`, args[_])
 }
 
-# dd writing to a block device (of=/dev/<device>). Writing to /dev/null or
-# to a regular file is not covered.
+block_device(value) if {
+	regex.match(`^/dev/(sd[a-z]+|hd[a-z]+|nvme[0-9]+n[0-9]+|vd[a-z]+|xvd[a-z]+|mmcblk[0-9]+|loop[0-9]+|dm-[0-9]+|md[0-9]+|disk[0-9]+|rdisk[0-9]+)`, value)
+}
+
+# dd's output must belong to the same command, not a later echo/printf.
 destructive_shell(value) if {
-	regex.match(`\bdd\b`, value)
-	regex.match(`\bof=/dev/(sd[a-z]+|hd[a-z]+|nvme[0-9]+n[0-9]+|vd[a-z]+|xvd[a-z]+|mmcblk[0-9]+|loop[0-9]+|dm-[0-9]+|md[0-9]+|disk[0-9]+|rdisk[0-9]+)`, value)
+	args := shell_arguments(value, "dd")[_]
+	some arg in args
+	startswith(arg, "of=")
+	block_device(substring(arg, 3, -1))
 }
 
 # The fork bomb: :(){ :|:& };: (whitespace-tolerant).
@@ -124,25 +203,35 @@ destructive_shell(value) if {
 	regex.match(`&\s*\}\s*;`, value)
 }
 
-# chmod 777 on the filesystem root. A root target is required; chmod 777 on
-# a named file or directory is ordinary (if careless) administration.
+# chmod 777 on the filesystem root, including ordinary quoted operands.
 destructive_shell(value) if {
-	regex.match(`\bchmod\s+(?:-[a-zA-Z]*[Rr][a-zA-Z]*\s+)?777\s+/\*?(\s|$|;|\||&)`, value)
+	args := shell_arguments(value, "chmod")[_]
+	some i, arg in args
+	arg == "777"
+	some j
+	j > i
+	regex.match(`^/\*?$`, args[j])
 }
 
-# Shell redirection to a block device (>, >>, 2>, 2>>). Redirection to
-# /dev/null is excluded by the device list and is not covered.
+# Shell redirection to a block device, including quoted destinations.
+# /dev/null remains outside the device list.
 destructive_shell(value) if {
-	regex.match(`[0-9]?>>?\s*/dev/(sd[a-z]+|hd[a-z]+|nvme[0-9]+n[0-9]+|vd[a-z]+|xvd[a-z]+|mmcblk[0-9]+|loop[0-9]+|dm-[0-9]+|md[0-9]+|disk[0-9]+|rdisk[0-9]+)`, value)
+	command := shell_commands(value)[_]
+	some i, token in command
+	regex.match(`^(>>?|>\||>&|&>>?)$`, token)
+	block_device(shell_word(command[i + 1]))
 }
 
 # ── Path traversal ────────────────────────────────────────────────────────────
-# Intent: block ".." used as a path segment (for example ../../etc/passwd).
-# A segment boundary is required on both sides, so "file..txt", "...", and
-# "cd .." do not match. The terminators cover slash, backslash, command
-# separators, and end of string.
+# Standalone paths and path-bearing arguments (including quoted arguments and
+# --option=../path) are covered. Bare ".." arguments such as "cd .." remain
+# outside this heuristic; dot-containing names and ellipses are not segments.
 path_traversal(value) if {
-	regex.match(`(^|[/\\])\.\.(/|\\|;|\||&|$)`, value)
+	regex.match(`(^|[/\\])\.\.(/|\\|[\s'";|&)]|$)`, value)
+}
+
+path_traversal(value) if {
+	regex.match(`(^|[\s'"=;|&(])\.\.[/\\]`, value)
 }
 
 # ── Base64-encoded destructive payloads ───────────────────────────────────────
