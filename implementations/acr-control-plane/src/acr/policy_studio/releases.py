@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from acr.common.errors import PolicyReleaseNotFoundError, PolicyValidationError
+from acr.config import settings
 from acr.db.models import PolicyDraftRecord, PolicyReleaseRecord
 from acr.policy_studio.bundles import build_policy_bundle
-from acr.policy_studio.core_bundle import validate_extension
+from acr.policy_studio.distribution import build_active_runtime_bundle
+from acr.policy_studio.isolation import validate_studio_policy
 from acr.policy_studio.models import PolicyValidationResponse
 from acr.policy_studio.publisher import publish_active_policy_bundle, publish_policy_bundle
 
@@ -29,7 +33,7 @@ def validate_policy_draft_record(record: PolicyDraftRecord) -> PolicyValidationR
     if not record.rego_policy.strip():
         issues.append("Rego policy cannot be empty")
     try:
-        validate_extension(record.rego_policy, name=record.agent_id)
+        validate_studio_policy(record.rego_policy, name=record.agent_id)
     except ValueError as exc:
         issues.append(str(exc))
     if wizard.get("escalate_tool") and "escalate" not in record.rego_policy:
@@ -39,6 +43,20 @@ def validate_policy_draft_record(record: PolicyDraftRecord) -> PolicyValidationR
     if manifest.get("risk_tier") == "high":
         warnings.append("High-risk agent: require approval before enabling in production")
 
+    if not issues:
+        candidate = SimpleNamespace(
+            agent_id=record.agent_id,
+            release_id="candidate",
+            version=0,
+            activated_at=None,
+            rego_policy=record.rego_policy,
+        )
+        try:
+            build_active_runtime_bundle(
+                [candidate], extensions=settings.policy_extension_dir or None
+            )
+        except ValueError as exc:
+            issues.append(str(exc))
     return PolicyValidationResponse(valid=not issues, issues=issues, warnings=warnings)
 
 
@@ -68,6 +86,26 @@ async def get_policy_release(db: AsyncSession, release_id: str) -> PolicyRelease
     return record
 
 
+async def _validate_candidate(
+    db: AsyncSession, record: PolicyDraftRecord | PolicyReleaseRecord
+) -> None:
+    active = await list_active_policy_releases(db)
+    candidate = SimpleNamespace(
+        agent_id=record.agent_id,
+        release_id="candidate",
+        version=0,
+        activated_at=None,
+        rego_policy=record.rego_policy,
+    )
+    records = [item for item in active if item.agent_id != record.agent_id] + [candidate]
+    try:
+        await asyncio.to_thread(
+            build_active_runtime_bundle, records, extensions=settings.policy_extension_dir or None
+        )
+    except ValueError as exc:
+        raise PolicyValidationError(str(exc)) from exc
+
+
 async def activate_policy_release(
     db: AsyncSession,
     *,
@@ -76,10 +114,11 @@ async def activate_policy_release(
 ) -> PolicyReleaseRecord:
     record = await get_policy_release(db, release_id)
     try:
-        validate_extension(record.rego_policy, name=record.agent_id)
+        validate_studio_policy(record.rego_policy, name=record.agent_id)
     except ValueError as exc:
         raise PolicyValidationError(str(exc)) from exc
 
+    await _validate_candidate(db, record)
     active_result = await db.execute(
         select(PolicyReleaseRecord).where(
             PolicyReleaseRecord.agent_id == record.agent_id,
@@ -124,10 +163,11 @@ async def publish_policy_draft(
     notes: str | None = None,
     rollback_from_release_id: str | None = None,
 ) -> PolicyReleaseRecord:
-    validation = validate_policy_draft_record(draft)
+    validation = await asyncio.to_thread(validate_policy_draft_record, draft)
     if not validation.valid:
         raise PolicyValidationError("; ".join(validation.issues))
 
+    await _validate_candidate(db, draft)
     version_result = await db.execute(
         select(func.max(PolicyReleaseRecord.version)).where(
             PolicyReleaseRecord.agent_id == draft.agent_id
@@ -199,11 +239,12 @@ async def rollback_policy_release(
         rego_policy=source.rego_policy,
         wizard_inputs={},
     )
-    source.status = "rolled_back"
-    return await publish_policy_draft(
+    replacement = await publish_policy_draft(
         db,
         draft=draft,
         actor=actor,
         notes=notes or f"Rollback to {release_id}",
         rollback_from_release_id=release_id,
     )
+    source.status = "rolled_back"
+    return replacement

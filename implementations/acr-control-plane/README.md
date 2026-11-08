@@ -418,6 +418,9 @@ base64 decoding. This does not make unrestricted shell execution safe.
 ### Upgrading the control plane and policies
 
 From 1.3.0, the Python wheel and gateway image include matching core policies.
+The gateway image also includes OPA 0.70.0 for policy compilation. Standalone
+Python policy export/administration requires that compiler installed separately
+and selected with `OPA_BINARY` or `PATH`; SDK-only use does not.
 Use the coordinated [managed upgrade and rollback procedure](docs/managed-policy-upgrades.md)
 to update OPA's pinned configuration while preserving operator policies and active
 Studio releases. Existing deployments need the one-time migration; replacing only

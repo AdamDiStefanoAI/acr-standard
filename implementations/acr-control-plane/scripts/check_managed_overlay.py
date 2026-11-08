@@ -15,6 +15,12 @@ images = [c["image"] for c in pod["initContainers"] + pod["containers"] if c["na
 assert len(images) == 3 and len(set(images)) == 1, images
 assert images[0] == "ghcr.io/adamdistefanoai/acr-standard/acr-gateway:1.3.0", images
 assert all("--no-auth" not in c.get("command", []) for c in pod["initContainers"])
+exporter = next(c for c in pod["initContainers"] if c["name"] == "export-core-policy")
+assert exporter["securityContext"]["readOnlyRootFilesystem"] is True
+scratch = next(m for m in exporter["volumeMounts"] if m["mountPath"] == "/tmp")
+assert scratch.get("readOnly", False) is False
+volume = next(v for v in pod["volumes"] if v["name"] == scratch["name"])
+assert volume["emptyDir"]["sizeLimit"] == "64Mi"
 opa = next(c for c in pod["containers"] if c["name"] == "opa")
 assert opa["image"] == "openpolicyagent/opa:0.70.0"
 assert "--addr=127.0.0.1:8181" in opa["args"]

@@ -15,6 +15,45 @@ Active database-policy publication retains its existing asynchronous polling
 semantics: core/local-extension readiness does not prove a just-activated Studio
 revision has propagated. Verify the desired policy decision after activation.
 
+## Required policy compiler
+
+Policy export and Studio policy administration require the OPA **0.70.0** binary.
+The supported gateway image includes it from the official pinned OPA image.
+Standalone Python deployments must install that version from the official OPA
+release and set `OPA_BINARY` to its executable path (or make `opa` available on
+`PATH`). Installing the Python wheel alone does not install this executable.
+SDK-only clients and the no-Docker mocked SDK example do not need a compiler.
+
+The actual OPA compiler validates generated policy artifacts before they are
+exported, published or activated. Missing compiler or invalid Rego is an explicit
+error; do not bypass it or silently activate only part of a policy. Configure
+this dependency before an intentional upgrade or any policy administration.
+
+## Rego compatibility and per-agent Studio policies
+
+Aggregates use Rego v0 as their default dialect. Valid legacy operator rules such
+as `deny["reason"] { condition }` continue to load without being rewritten.
+Each module is parsed by real OPA first as v0, then as v1 if needed. The bundle's
+`file_rego_versions` selects the detected dialect per file, so existing v1 modules
+without imports also remain supported. Explicit `import rego.v1` and appropriate
+`future.keywords` imports still work. The entire resulting bundle is compiled;
+core resources keep their explicit keyword imports.
+The identity contract changes with this delivery/scoping behavior; an old
+aggregate cannot satisfy the new gateway contract.
+
+Each active Studio module is placed in an isolated namespace. Only its supported
+decision outputs are bridged into `acr`, guarded by that release's exact agent ID.
+Local helper names remain local, even when two agents use the same helper name.
+Supported outputs include allow/deny, modify and its transformed payload,
+escalation and its queue/SLA metadata. Single-line and multiline rules have the
+same scope. Operator files remain explicitly shared across agents.
+
+Studio modules must use the supported `package acr` form and local helpers;
+explicit `data` references and unsupported namespace/declaration forms require
+review rather than being silently rewritten. Review existing Studio releases for
+these constraints before cutover. Do not assume global operator policy access
+inside a private Studio module; keep shared constraints in operator policies.
+
 ## Approval processing boundary and cutover prerequisite
 
 The preexisting approved-action path, `execute_approval` in
@@ -75,7 +114,16 @@ claim that a matching core identity reauthorizes stored approvals.
 Set `ACR_GATEWAY_IMAGE` to the reviewed release, preferably an immutable digest,
 then run `scripts/upgrade_compose.sh`. Use the same command with the retained
 prior managed release image to roll back. Complete the approval-processing
-prerequisite first. The script deliberately stops the gateway,
+prerequisite first. Before stopping the running gateway, the script exports the
+candidate core + local operator bundle into a disposable volume and asks the
+configured OPA image to compile it. A failed preflight leaves the old services
+running and the live bundle unchanged. The candidate gateway image then runs
+`python -m acr.policy_studio.distribution preflight --extensions /operator-policies`
+against the current database, reading active Studio releases and compiling the
+complete candidate aggregate without writes or activation changes. Any failure
+stops the script before the old gateway is stopped. Freeze policy administration
+and operator-file edits during preflight and cutover; this is a point-in-time
+check, not a database lock. The script then deliberately stops the gateway,
 exports the new pinned OPA config, runs schema migrations, and restarts both
 services. It never deletes operator files or database/Redis volumes. Do not run
 `down -v` on a real deployment. A failed update leaves the gateway stopped or
@@ -95,7 +143,15 @@ with a reviewed immutable digest. The same image replacement must cover gateway,
 policy-export init container, and migration init container. Kustomize's image
 transform does all three. The OPA sidecar runs the tested `0.70.0` version.
 
-Each Pod exports a core-pinned configuration before startup. OPA polls the gateway
+Before changing the Kubernetes deployment, run the same read-only `distribution
+preflight` command in the candidate image with the existing database configuration
+and operator-policy mount. Freeze policy changes through cutover. A rolling
+readiness gate keeps old healthy Pods available, but does not replace this
+candidate compatibility check.
+
+Each Pod exports a core-pinned configuration before startup. The export init
+container retains its read-only root filesystem and has a dedicated 64 MiB
+`emptyDir` mounted at `/tmp` for OPA parser/compiler temporary files. OPA polls the gateway
 on localhost; the gateway serves authenticated bundles before being ready for
 user traffic. There is no gateway Service-readiness dependency and no shared OPA
 pool mixing releases. Operator ConfigMaps and the active Studio database records
@@ -138,7 +194,8 @@ production configuration and does not exercise dynamic policy releases.
 
 `ACR managed policy upgrade validation` builds two synthetic release images with
 different core digests and exercises actual Docker and disposable kind Kubernetes
-upgrade/rollback. It checks custom policy and active Studio release preservation,
+upgrade/rollback. It checks legacy v0 custom policy and active Studio release preservation,
+and two-agent DENY/MODIFY/ESCALATE isolation using actual gateway and OPA responses,
 readiness, allow/deny outcomes, and stale-core refusal. The Kubernetes test rolls
 two gateway replicas and checks readiness per Pod. It also requires the kill-switch
 Deployment to become ready and verifies synthetic kill/status/restore operations

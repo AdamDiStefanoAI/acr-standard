@@ -1,7 +1,7 @@
 """Run with an installed wheel, outside the checkout and without PYTHONPATH.
 
 Usage: python /path/to/managed_wheel_probe.py [--opa /path/to/opa]
-Only the installed package and Python standard library are needed.
+The installed package and supported OPA 0.70 compiler are required.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--opa")
     args = parser.parse_args()
+    if args.opa:
+        os.environ["OPA_BINARY"] = args.opa
     assert not os.environ.get("PYTHONPATH"), "Run without checkout imports"
     assert set(core_sources()) == {"common.rego", "content_safety.rego"}
     with tempfile.TemporaryDirectory() as directory:

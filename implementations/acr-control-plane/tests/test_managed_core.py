@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 import os
@@ -46,7 +47,7 @@ def test_deterministic_archive_and_manifest(tmp_path):
     with tarfile.open(tmp_path / "one/bundle.tar.gz") as archive:
         manifest = json.load(archive.extractfile(".manifest"))
         assert manifest["revision"] == first["revision"]
-        assert manifest["roots"] == ["acr"]
+        assert manifest["roots"] == ["acr", "acr_studio"]
         assert all(member.mtime == 0 for member in archive.getmembers())
     assert first["core"] == core_identity()
 
@@ -132,7 +133,9 @@ def test_active_release_order_stable_and_activation_changes_revision(tmp_path):
     bundle = build_active_runtime_bundle([one], extensions=str(tmp_path))
     with tarfile.open(fileobj=io.BytesIO(bundle.bytes_data)) as archive:
         assert "bundle/extensions/custom.rego" in archive.getnames()
-        scoped = archive.extractfile("bundle/agents/one.rego").read()
+        scoped = archive.extractfile(
+            f"bundle/agents/bridges/{hashlib.sha256(b'one').hexdigest()}.rego"
+        ).read()
         assert b'input.agent.agent_id == "one"' in scoped
 
 

@@ -78,6 +78,16 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -e ".[dev]"
 
+      - name: Install pinned OPA policy compiler
+        run: |
+          set -eu
+          container=$(docker create openpolicyagent/opa:0.70.0)
+          trap 'docker rm "$container" >/dev/null' EXIT
+          docker cp "$container:/opa" "$RUNNER_TEMP/opa"
+          chmod +x "$RUNNER_TEMP/opa"
+          echo "OPA_BINARY=$RUNNER_TEMP/opa" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
       - name: Run tests with coverage
         env:
           # Disposable test values, never production credentials.
@@ -142,6 +152,16 @@ jobs:
 
       - name: Install dependencies
         run: python -m pip install -e ".[dev]"
+
+      - name: Install pinned OPA policy compiler
+        run: |
+          set -eu
+          container=$(docker create openpolicyagent/opa:0.70.0)
+          trap 'docker rm "$container" >/dev/null' EXIT
+          docker cp "$container:/opa" "$RUNNER_TEMP/opa"
+          chmod +x "$RUNNER_TEMP/opa"
+          echo "OPA_BINARY=$RUNNER_TEMP/opa" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
       - name: Start services
         run: docker compose up --build -d postgres redis opa

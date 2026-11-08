@@ -86,7 +86,9 @@ Run the relevant focused tests while developing, then the full unit suite. Inclu
 
 #### Policy and integration checks
 
-For policy changes, install OPA **0.70.0** (the version used by the local stack and CI), then run:
+Policy export/administration and tests require OPA **0.70.0** (the version used
+by the local stack and CI). Install it from the official OPA release, place `opa`
+on `PATH` or set `OPA_BINARY` to its executable path, then run:
 
 ```bash
 opa check policies/

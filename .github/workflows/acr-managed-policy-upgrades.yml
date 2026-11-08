@@ -51,7 +51,11 @@ jobs:
           docker cp "$container:/opa" /tmp/acr-opa
           docker rm "$container"
           chmod +x /tmp/acr-opa
-          env -u PYTHONPATH /tmp/acr-managed-wheel/bin/python "$PWD/tests/helpers/managed_wheel_probe.py" --opa /tmp/acr-opa
+          env -u PYTHONPATH OPA_BINARY=/tmp/acr-opa /tmp/acr-managed-wheel/bin/python "$PWD/tests/helpers/managed_wheel_probe.py" --opa /tmp/acr-opa
+      - name: Validate real OPA two-agent isolation and legacy operator dialect
+        run: |
+          mkdir -p managed-policy-evidence
+          env -u PYTHONPATH OPA_BINARY=/tmp/acr-opa /tmp/acr-managed-wheel/bin/python scripts/check_managed_policy_fixture.py --opa /tmp/acr-opa > managed-policy-evidence/opa-isolation-fixture.txt
       - name: Build two distinct synthetic release images
         run: |
           set -eu
@@ -62,6 +66,11 @@ jobs:
           import future.keywords.if
           import future.keywords.contains
           deny contains "Local migration sentinel" if { input.action.parameters.migration_sentinel == true }
+          REGO
+          # Deliberately preserve valid pre-Rego-v1 syntax without future imports.
+          cat > operator-policies/legacy_v0.rego <<'REGO'
+          package acr
+          deny["Legacy v0 sentinel"] { input.action.parameters.legacy_v0_sentinel == true }
           REGO
           docker build -t acr-gateway:upgrade-ci-old .
           # Deliberately alter core bytes, preserving semantics, to exercise identity rollover.

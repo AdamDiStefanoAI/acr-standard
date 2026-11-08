@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import tarfile
@@ -300,10 +301,19 @@ class TestPolicyDraftAPI:
             names = set(bundle.getnames())
             assert "bundle/common.rego" in names
             assert "bundle/content_safety.rego" in names
-            assert "bundle/agents/runtime-bot-01.rego" in names
+            assert (
+                f"bundle/agents/modules/{hashlib.sha256(b'runtime-bot-01').hexdigest()}.rego"
+                in names
+            )
             metadata = json.loads(bundle.extractfile("bundle/metadata.json").read())
             assert metadata["active_agents"] == ["runtime-bot-01"]
-            scoped_policy = bundle.extractfile("bundle/agents/runtime-bot-01.rego").read().decode()
+            scoped_policy = (
+                bundle.extractfile(
+                    f"bundle/agents/bridges/{hashlib.sha256(b'runtime-bot-01').hexdigest()}.rego"
+                )
+                .read()
+                .decode()
+            )
             assert 'input.agent.agent_id == "runtime-bot-01"' in scoped_policy
 
         discovery_resp = await async_client.get("/acr/policy-bundles/discovery.json")

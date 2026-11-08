@@ -17,8 +17,10 @@ import tarfile
 from importlib.resources import files
 from pathlib import Path
 
+from acr.policy_studio.compiler import file_rego_version, validate_bundle
+
 CORE_FILES = ("common.rego", "content_safety.rego")
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 3
 _RESERVED = re.compile(r"\b(?:core_identity|__acr_core_files|operator_identity)\b")
 
 
@@ -173,8 +175,17 @@ def assemble_bundle(payloads: dict[str, bytes]) -> tuple[bytes, dict]:
     }
     hashes = {name: hashlib.sha256(body).hexdigest() for name, body in sorted(payloads.items())}
     revision = hashlib.sha256(canonical_json(hashes)).hexdigest()
-    manifest = {"revision": revision, "roots": ["acr"], "rego_version": 1}
+    versions = {
+        name: file_rego_version(body) for name, body in payloads.items() if name.endswith(".rego")
+    }
+    manifest = {
+        "revision": revision,
+        "roots": ["acr", "acr_studio"],
+        "rego_version": 0,
+        "file_rego_versions": versions,
+    }
     archive = deterministic_archive({**payloads, ".manifest": canonical_json(manifest)})
+    validate_bundle(archive)
     return archive, {
         "core": identity,
         "operator_identity": operator,

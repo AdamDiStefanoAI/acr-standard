@@ -20,7 +20,7 @@ OUT = Path("managed-policy-evidence")
 OUT.mkdir(exist_ok=True)
 OPERATOR = {"X-Operator-API-Key": "ci-operator-only"}
 BASE = "http://127.0.0.1:8000"
-_agent_access_token: str | None = None
+_agent_access_tokens: dict[str, str] = {}
 http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 MANIFEST = {
     "agent_id": "upgrade-ci",
@@ -68,22 +68,23 @@ def wait_ready():
     raise AssertionError("Gateway did not become ready")
 
 
-def agent_token(*, refresh=False):
+def agent_token(agent_id="upgrade-ci", *, refresh=False):
     """Reuse the legitimate issued token across probes and release changes."""
-    global _agent_access_token
-    if _agent_access_token is None or refresh:
-        status, token = request("POST", "/acr/agents/upgrade-ci/token", {}, OPERATOR)
+    if agent_id not in _agent_access_tokens or refresh:
+        status, token = request("POST", f"/acr/agents/{agent_id}/token", {}, OPERATOR)
         assert status == 200, token
-        _agent_access_token = token["access_token"]
-    return _agent_access_token
+        _agent_access_tokens[agent_id] = token["access_token"]
+    return _agent_access_tokens[agent_id]
 
 
-def evaluate(parameters):
+def evaluate(parameters, agent_id="upgrade-ci"):
     body = {
-        "agent_id": "upgrade-ci",
+        "agent_id": agent_id,
         "action": {"tool_name": "query_customer_db", "parameters": parameters},
     }
-    response = request("POST", "/acr/evaluate", body, {"Authorization": "Bearer " + agent_token()})
+    response = request(
+        "POST", "/acr/evaluate", body, {"Authorization": "Bearer " + agent_token(agent_id)}
+    )
     # A denied policy decision (403), stale core, or unavailable dependency must
     # never mint a new token. Retry only an actual authentication failure, once.
     if response[0] == 401:
@@ -91,45 +92,83 @@ def evaluate(parameters):
             "POST",
             "/acr/evaluate",
             body,
-            {"Authorization": "Bearer " + agent_token(refresh=True)},
+            {"Authorization": "Bearer " + agent_token(agent_id, refresh=True)},
         )
     return response
 
 
+STUDIO_POLICY_A = """package acr
+import future.keywords.if
+import future.keywords.contains
+trigger := input.action.parameters.studio_sentinel
+deny contains "Studio sentinel" if { trigger == true }
+modify := true if { input.action.parameters.studio_modify == true }
+modified_parameters := {"customer_id": "reviewed"} if { input.action.parameters.studio_modify == true }
+escalate := true if { input.action.parameters.studio_escalate == true }
+escalate_queue := "studio-ci" if { input.action.parameters.studio_escalate == true }
+"""
+# Existing v1 syntax without imports must receive its own manifest dialect entry.
+STUDIO_POLICY_B = """package acr
+trigger := input.action.parameters.agent_b_only
+deny contains "Agent B sentinel" if { trigger == true }
+"""
+
+
 def assert_policy(label):
     wait_ready()
-    for parameters, expected in [
-        ({"customer_id": "C-12345"}, "allow"),
-        ({"migration_sentinel": True}, "deny"),
-        ({"studio_sentinel": True}, "deny"),
-    ]:
-        status, result = evaluate(parameters)
-        assert result.get("decision") == expected, (label, status, result)
+    observed = []
+    for agent_id in ("upgrade-ci", "upgrade-ci-b"):
+        for parameters, expected in [
+            ({"customer_id": "C-12345"}, "allow"),
+            ({"migration_sentinel": True}, "deny"),
+            ({"legacy_v0_sentinel": True}, "deny"),
+            ({"studio_sentinel": True}, "deny" if agent_id == "upgrade-ci" else "allow"),
+            ({"studio_modify": True}, "modify" if agent_id == "upgrade-ci" else "allow"),
+            ({"studio_escalate": True}, "escalate" if agent_id == "upgrade-ci" else "allow"),
+            ({"agent_b_only": True}, "deny" if agent_id == "upgrade-ci-b" else "allow"),
+        ]:
+            status, result = evaluate(parameters, agent_id)
+            assert result.get("decision") == expected, (label, agent_id, parameters, status, result)
+            assert status == {"allow": 200, "deny": 403, "modify": 200, "escalate": 202}[expected]
+            if expected == "modify":
+                assert result["modified_action"]["parameters"] == {"customer_id": "reviewed"}
+            if expected == "escalate":
+                assert result.get("approval_request_id"), result
+            observed.append({"agent_id": agent_id, "parameters": parameters, "decision": expected})
     status, archive = request("GET", "/acr/policy-bundles/active.tar.gz", headers=OPERATOR)
     assert status == 200
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as bundle:
         sources = "\n".join(
             bundle.extractfile(n).read().decode() for n in bundle.getnames() if n.endswith(".rego")
         )
-    assert "migration_sentinel" in sources and "studio_sentinel" in sources
-    OUT.joinpath(label + ".txt").write_text(
-        "PASS: readiness, core match, allow, local deny, active Studio deny\n"
+    assert all(
+        marker in sources
+        for marker in (
+            "migration_sentinel",
+            "legacy_v0_sentinel",
+            "studio_sentinel",
+            "agent_b_only",
+        )
     )
+    OUT.joinpath(label + ".txt").write_text(
+        "PASS: readiness, core match, legacy v0 deny, local policy, two-agent Studio DENY/MODIFY/ESCALATE isolation\n"
+    )
+    OUT.joinpath(label + "-decisions.json").write_text(json.dumps(observed, indent=2) + "\n")
 
 
-def seed():
-    wait_ready()
-    status, body = request("POST", "/acr/agents", MANIFEST, OPERATOR)
+def publish_policy(agent_id, policy):
+    manifest = {**MANIFEST, "agent_id": agent_id}
+    status, body = request("POST", "/acr/agents", manifest, OPERATOR)
     assert status == 201, (status, body)
     status, draft = request(
         "POST",
         "/acr/policy-drafts",
         {
-            "name": "Persistent Studio sentinel",
-            "agent_id": "upgrade-ci",
+            "name": "Persistent isolation sentinel " + agent_id,
+            "agent_id": agent_id,
             "template": "customer_support",
-            "manifest": MANIFEST,
-            "rego_policy": 'package acr\nimport future.keywords.if\nimport future.keywords.contains\ndeny contains "Studio sentinel" if { input.action.parameters.studio_sentinel == true }',
+            "manifest": manifest,
+            "rego_policy": policy,
             "wizard_inputs": {},
         },
         OPERATOR,
@@ -146,26 +185,100 @@ def seed():
         "POST", "/acr/policy-drafts/releases/" + release["release_id"] + "/activate", {}, OPERATOR
     )
     assert status == 200, (status, body)
-    # OPA polls asynchronously; do not mistake initial core readiness for active policy arrival.
+
+
+def seed():
+    wait_ready()
+    publish_policy("upgrade-ci", STUDIO_POLICY_A)
+    publish_policy("upgrade-ci-b", STUDIO_POLICY_B)
+    # Activation propagation is asynchronous. Check actual decisions, not readiness alone.
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
-        if evaluate({"studio_sentinel": True})[1].get("decision") == "deny":
+        first = evaluate({"studio_sentinel": True})[1]
+        second = evaluate({"agent_b_only": True}, "upgrade-ci-b")[1]
+        if first.get("decision") == second.get("decision") == "deny":
             return
         time.sleep(2)
-    raise AssertionError("Studio policy did not propagate")
+    raise AssertionError("Both Studio policies did not propagate")
 
 
-def compose(*args):
+def direct_opa_probe():
+    """The same unmocked OPA response checks run in Docker and every kind gateway Pod."""
+    return """
+import json
+import os
+import urllib.request
+manifest = {"allowed_tools": ["query_customer_db"], "forbidden_tools": [], "boundaries": {"max_actions_per_minute": 10000, "max_cost_per_hour_usd": 100}}
+observed = []
+for agent in ("upgrade-ci", "upgrade-ci-b"):
+    for flag in ("legacy_v0_sentinel", "studio_sentinel", "studio_modify", "studio_escalate", "agent_b_only"):
+        payload = {"input": {"agent": {**manifest, "agent_id": agent}, "action": {"tool_name": "query_customer_db", "parameters": {flag: True}}, "context": {"actions_this_minute": 0, "hourly_spend_usd": 0}}}
+        req = urllib.request.Request(os.environ["OPA_URL"] + "/v1/data/acr", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            result = json.load(response)["result"]
+        deny = result.get("deny", [])
+        if flag == "legacy_v0_sentinel":
+            assert "Legacy v0 sentinel" in deny, (agent, flag, result)
+        elif flag == "studio_sentinel" and agent == "upgrade-ci":
+            assert "Studio sentinel" in deny, (agent, flag, result)
+        elif flag == "agent_b_only" and agent == "upgrade-ci-b":
+            assert "Agent B sentinel" in deny, (agent, flag, result)
+        elif flag == "studio_modify" and agent == "upgrade-ci":
+            assert result.get("modify") is True and result.get("modified_parameters") == {"customer_id": "reviewed"}, result
+        elif flag == "studio_escalate" and agent == "upgrade-ci":
+            assert result.get("escalate") is True and result.get("escalate_queue") == "studio-ci", result
+        else:
+            assert not deny and result.get("allow") is True, (agent, flag, result)
+            assert not result.get("modify") and not result.get("escalate"), result
+            assert result.get("modified_parameters") is None, result
+            assert result.get("escalate_queue", "default") == "default", result
+        observed.append({"agent_id": agent, "flag": flag, "deny": deny, "modify": result.get("modify", False), "escalate": result.get("escalate", False)})
+print(json.dumps(observed, sort_keys=True))
+"""
+
+
+def docker_opa_check(label):
+    result = compose(
+        "exec", "-T", "acr-gateway", "python", "-c", direct_opa_probe(), capture_output=True
+    )
+    OUT.joinpath(label + "-opa.json").write_text(result.stdout)
+
+
+def compose(*args, **kwargs):
     assert os.environ["COMPOSE_PROJECT_NAME"].startswith("acr-managed-")
-    run("docker", "compose", *args)
+    return run("docker", "compose", *args, **kwargs)
+
+
+def candidate_preflight(label):
+    status, before = request("GET", "/acr/policy-drafts/releases/history", headers=OPERATOR)
+    assert status == 200, before
+    result = compose(
+        "run",
+        "--rm",
+        "--no-deps",
+        "--entrypoint",
+        "python",
+        "acr-gateway",
+        "-m",
+        "acr.policy_studio.distribution",
+        "preflight",
+        "--extensions",
+        "/operator-policies",
+        capture_output=True,
+    )
+    status, after = request("GET", "/acr/policy-drafts/releases/history", headers=OPERATOR)
+    assert status == 200 and after == before, "Candidate preflight changed stored releases"
+    OUT.joinpath(label + "-preflight.json").write_text(result.stdout)
 
 
 def docker_test():
     compose("up", "-d", "--no-build", "--wait", "--wait-timeout", "180")
     seed()
     assert_policy("docker-before")
+    docker_opa_check("docker-before")
     # Deliberately upgrade gateway alone: its pinned core must refuse old loaded OPA.
     os.environ["ACR_GATEWAY_IMAGE"] = "acr-gateway:upgrade-ci-next"
+    candidate_preflight("docker-upgrade")
     compose("up", "-d", "--no-build", "--no-deps", "--force-recreate", "acr-gateway")
     time.sleep(8)
     assert request("GET", "/acr/ready")[0] == 503
@@ -176,10 +289,13 @@ def docker_test():
     compose("run", "--rm", "--no-deps", "acr-policy-export")
     compose("up", "-d", "--no-deps", "--force-recreate", "opa")
     assert_policy("docker-upgrade")
+    docker_opa_check("docker-upgrade")
     os.environ["ACR_GATEWAY_IMAGE"] = "acr-gateway:upgrade-ci-old"
+    candidate_preflight("docker-rollback")
     compose("run", "--rm", "--no-deps", "acr-policy-export")
     compose("up", "-d", "--no-build", "--no-deps", "--force-recreate", "acr-gateway", "opa")
     assert_policy("docker-rollback")
+    docker_opa_check("docker-rollback")
 
 
 def kubectl(*args, **kw):
@@ -270,6 +386,7 @@ def kind_test():
             }
         if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "acr-operator-policies":
             d["data"]["sentinel.rego"] = Path("operator-policies/sentinel.rego").read_text()
+            d["data"]["legacy_v0.rego"] = Path("operator-policies/legacy_v0.rego").read_text()
         if d["kind"] == "Deployment":
             d["spec"]["replicas"] = 2 if d["metadata"]["name"] == "acr-gateway" else 1
             for c in (
@@ -364,6 +481,20 @@ def kind_test():
         seed()
         assert_policy("kind-before")
         validate_kind_killswitch("kind-before")
+        result = kubectl(
+            "-n",
+            "acr-system",
+            "exec",
+            "deployment/acr-gateway",
+            "-c",
+            "gateway",
+            "--",
+            "python",
+            "-c",
+            direct_opa_probe(),
+            capture_output=True,
+        )
+        OUT.joinpath("kind-before-opa.json").write_text(result.stdout)
         for label, image in [
             ("kind-upgrade", "acr-gateway:upgrade-ci-next"),
             ("kind-rollback", "acr-gateway:upgrade-ci-old"),
@@ -403,6 +534,22 @@ def kind_test():
             for pod in pods:
                 if pod["metadata"].get("deletionTimestamp"):
                     continue
+                result = kubectl(
+                    "-n",
+                    "acr-system",
+                    "exec",
+                    pod["metadata"]["name"],
+                    "-c",
+                    "gateway",
+                    "--",
+                    "python",
+                    "-c",
+                    direct_opa_probe(),
+                    capture_output=True,
+                )
+                OUT.joinpath(label + "-" + pod["metadata"]["name"] + "-opa.json").write_text(
+                    result.stdout
+                )
                 kubectl(
                     "-n",
                     "acr-system",

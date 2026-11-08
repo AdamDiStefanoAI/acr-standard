@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -132,7 +134,7 @@ async def validate(
     ),
 ) -> PolicyValidationResponse:
     record = await service.get_policy_draft(db, draft_id)
-    return validate_policy_draft_record(record)
+    return await asyncio.to_thread(validate_policy_draft_record, record)
 
 
 @router.post("/{draft_id}/publish", response_model=PolicyReleaseResponse, status_code=201)
@@ -220,8 +222,8 @@ async def get_active_runtime_bundle(
     if core_id is not None and core_id != core_identity()["core_id"]:
         return Response(status_code=404)
     records = await list_active_policy_releases(db)
-    artifact = build_active_runtime_bundle(
-        records, extensions=settings.policy_extension_dir or None
+    artifact = await asyncio.to_thread(
+        build_active_runtime_bundle, records, extensions=settings.policy_extension_dir or None
     )
     return Response(
         content=artifact.bytes_data,

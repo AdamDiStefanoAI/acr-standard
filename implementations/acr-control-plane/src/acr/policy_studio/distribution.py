@@ -12,10 +12,8 @@ from acr.policy_studio.core_bundle import (
     extension_files,
     managed_core_files,
     opa_config,
-    validate_extension,
 )
-
-_RULE_HEAD_RE = re.compile(r"^\s*[^#\s].*\sif\s\{\s*$")
+from acr.policy_studio.isolation import isolate_studio_policy
 
 
 @dataclass(frozen=True)
@@ -24,16 +22,6 @@ class RuntimeBundleArtifact:
     content_type: str
     bytes_data: bytes
     sha256: str
-
-
-def _scoped_rego_policy(*, agent_id: str, rego_policy: str) -> str:
-    guard = f'    input.agent.agent_id == "{agent_id}"'
-    scoped_lines: list[str] = []
-    for line in rego_policy.splitlines():
-        scoped_lines.append(line)
-        if _RULE_HEAD_RE.match(line):
-            scoped_lines.append(guard)
-    return "\n".join(scoped_lines) + "\n"
 
 
 def _policy_bytes(filename: str) -> bytes:
@@ -46,6 +34,17 @@ def _common_policy_bytes() -> bytes:
 
 def _content_safety_policy_bytes() -> bytes:
     return _policy_bytes("content_safety.rego")
+
+
+def _agent_bundle_paths(agent_id: str) -> tuple[str, str]:
+    key = hashlib.sha256(agent_id.encode()).hexdigest()
+    return f"bundle/agents/modules/{key}.rego", f"bundle/agents/bridges/{key}.rego"
+
+
+def _add_payload(payloads: dict[str, bytes], name: str, payload: bytes) -> None:
+    if name in payloads:
+        raise ValueError(f"Runtime bundle payload collision at {name}")
+    payloads[name] = payload
 
 
 def build_active_runtime_bundle(
@@ -81,11 +80,13 @@ def build_active_runtime_bundle(
     for record in active_releases:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", record.agent_id) or record.agent_id in {".", ".."}:
             raise ValueError("Unsafe agent ID in runtime bundle")
-        validate_extension(record.rego_policy, name=record.agent_id)
-        payloads[f"bundle/agents/{record.agent_id}.rego"] = _scoped_rego_policy(
+        isolated, bridge = isolate_studio_policy(
             agent_id=record.agent_id,
-            rego_policy=record.rego_policy,
-        ).encode()
+            source=record.rego_policy,
+        )
+        module_path, bridge_path = _agent_bundle_paths(record.agent_id)
+        _add_payload(payloads, module_path, isolated.encode())
+        _add_payload(payloads, bridge_path, bridge.encode())
     bytes_data, _ = assemble_bundle(payloads)
     return RuntimeBundleArtifact(
         filename="acr-active-runtime.tar.gz",
@@ -98,3 +99,54 @@ def build_active_runtime_bundle(
 def build_opa_discovery_document(*, service_base_url: str) -> dict:
     # A configuration document for operators, NOT the OPA discovery protocol.
     return opa_config(service_base_url)
+
+
+async def preflight_active_runtime(*, extensions: str | None = None) -> dict:
+    """Read and compile the candidate aggregate without changing DB or artifacts."""
+    import asyncio
+
+    from sqlalchemy import select
+
+    from acr.config import settings
+    from acr.db.database import async_session_factory
+    from acr.policy_studio.core_bundle import core_identity
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(PolicyReleaseRecord).where(PolicyReleaseRecord.activation_status == "active")
+        )
+        records = list(result.scalars().all())
+        artifact = await asyncio.to_thread(
+            build_active_runtime_bundle,
+            records,
+            extensions=extensions
+            if extensions is not None
+            else settings.policy_extension_dir or None,
+        )
+    return {
+        "status": "valid",
+        "active_release_count": len(records),
+        "core_id": core_identity()["core_id"],
+        "bundle_sha256": artifact.sha256,
+    }
+
+
+def main() -> None:
+    import argparse
+    import asyncio
+
+    parser = argparse.ArgumentParser(
+        description="Validate DB-active Studio and operator policies before cutover"
+    )
+    parser.add_argument("command", choices=["preflight"])
+    parser.add_argument("--extensions")
+    args = parser.parse_args()
+    try:
+        report = asyncio.run(preflight_active_runtime(extensions=args.extensions))
+    except Exception as exc:
+        parser.error(f"Active runtime preflight failed: {exc}")
+    print(json.dumps(report, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

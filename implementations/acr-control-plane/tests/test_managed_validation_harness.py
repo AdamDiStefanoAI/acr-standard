@@ -69,3 +69,20 @@ def test_actual_authentication_failure_refreshes_once(harness, monkeypatch, retr
         {"Authorization": "Bearer synthetic-token-1"},
         {"Authorization": "Bearer synthetic-token-2"},
     ]
+
+
+def test_two_agents_cache_distinct_tokens(harness, monkeypatch):
+    issued = []
+
+    def request(method, path, body=None, headers=None):
+        if path.endswith("/token"):
+            issued.append(path)
+            return 200, {"access_token": path.split("/")[-2]}
+        assert headers == {"Authorization": "Bearer " + body["agent_id"]}
+        return 200, {"decision": "allow"}
+
+    monkeypatch.setattr(harness, "request", request)
+    for _ in range(20):
+        harness.evaluate({}, "upgrade-ci")
+        harness.evaluate({}, "upgrade-ci-b")
+    assert issued == ["/acr/agents/upgrade-ci/token", "/acr/agents/upgrade-ci-b/token"]

@@ -106,3 +106,16 @@ def test_kubernetes_killswitch_probes_match_real_service_routes():
     for probe, path in expected.items():
         assert container[probe]["httpGet"] == {"path": path, "port": 8443}
         assert path in get_routes
+
+
+def test_policy_export_init_has_bounded_writable_scratch_with_readonly_root():
+    root = Path(__file__).resolve().parents[1]
+    deployment = yaml.safe_load((root / "deploy/k8s/base/gateway-deployment.yaml").read_text())
+    pod = deployment["spec"]["template"]["spec"]
+    exporter = next(c for c in pod["initContainers"] if c["name"] == "export-core-policy")
+    assert exporter["securityContext"]["readOnlyRootFilesystem"] is True
+    assert exporter["securityContext"]["runAsNonRoot"] is True
+    scratch = next(m for m in exporter["volumeMounts"] if m["mountPath"] == "/tmp")
+    assert scratch.get("readOnly", False) is False
+    volume = next(v for v in pod["volumes"] if v["name"] == scratch["name"])
+    assert volume["emptyDir"] == {"sizeLimit": "64Mi"}

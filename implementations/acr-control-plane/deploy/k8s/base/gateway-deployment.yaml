@@ -49,6 +49,8 @@ spec:
             drop:
             - ALL
         volumeMounts:
+        - name: policy-compiler-tmp
+          mountPath: /tmp
         - name: managed-policy
           mountPath: /managed
         - name: operator-policies
@@ -168,6 +170,9 @@ spec:
               name: acr-gateway-secret
               key: SERVICE_OPERATOR_API_KEY
       volumes:
+      - name: policy-compiler-tmp
+        emptyDir:
+          sizeLimit: 64Mi
       - name: tmp
         emptyDir: {}
       - name: managed-policy
