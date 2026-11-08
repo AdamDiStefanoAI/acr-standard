@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - "v*.*.*"
+  pull_request:
+    paths:
+      - ".github/workflows/acr-control-plane-release.yml"
+      - "LICENSE"
+      - "implementations/acr-control-plane/LICENSE"
+      - "implementations/acr-control-plane/Dockerfile*"
+      - "implementations/acr-control-plane/pyproject.toml"
+      - "implementations/acr-control-plane/scripts/*release_licenses.py"
+  workflow_dispatch: # Validation only; dispatch never publishes.
 
 permissions:
   contents: read
@@ -14,9 +23,114 @@ env:
   PACKAGE_BASENAME: acr-control-plane-compliance-package-${{ github.ref_name }}
 
 jobs:
-  docker-publish:
-    name: Publish ${{ matrix.service }} image
+  build-images:
+    name: Validate ${{ matrix.service }} release image
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      matrix:
+        include:
+          - service: gateway
+            dockerfile: Dockerfile
+          - service: killswitch
+            dockerfile: Dockerfile.killswitch
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Normalize image name
+        id: image
+        shell: bash
+        run: |
+          repo_lc="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+          echo "uri=ghcr.io/${repo_lc}/acr-${{ matrix.service }}" >> "${GITHUB_OUTPUT}"
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.uri }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix=sha-
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set package version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0+validation" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build ${{ matrix.service }} release candidate
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CONTROL_PLANE_DIR }}
+          file: ${{ env.CONTROL_PLANE_DIR }}/${{ matrix.dockerfile }}
+          push: false
+          load: true
+          tags: acr-${{ matrix.service }}:release-candidate
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=release-${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.service }}
+          build-args: |
+            SETUPTOOLS_SCM_PRETEND_VERSION=${{ steps.version.outputs.version }}
+
+      - name: Check actual image and installed package license bytes
+        run: python "${CONTROL_PLANE_DIR}/scripts/check_release_licenses.py" --image acr-${{ matrix.service }}:release-candidate
+
+      - name: Save and reload validated image without rebuilding
+        run: |
+          docker save acr-${{ matrix.service }}:release-candidate -o "${RUNNER_TEMP}/image.tar"
+          docker image rm acr-${{ matrix.service }}:release-candidate
+          docker load --input "${RUNNER_TEMP}/image.tar"
+          python "${CONTROL_PLANE_DIR}/scripts/check_release_licenses.py" --image acr-${{ matrix.service }}:release-candidate
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-image-${{ matrix.service }}
+          path: ${{ runner.temp }}/image.tar
+          retention-days: 3
+          compression-level: 0
+
+  build-python:
+    name: Validate Python release distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test license gate and build distributions
+        working-directory: ${{ env.CONTROL_PLANE_DIR }}
+        run: |
+          python scripts/test_release_licenses.py
+          python -m pip install --upgrade build
+          python -m build --outdir dist
+          python scripts/check_release_licenses.py --dist-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-python-distributions
+          path: ${{ env.CONTROL_PLANE_DIR }}/dist/*
+          retention-days: 3
+
+  docker-publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    name: Publish ${{ matrix.service }} image
+    needs: [build-images, build-python]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write
@@ -58,29 +172,33 @@ jobs:
             type=semver,pattern={{major}}
             type=sha,prefix=sha-
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Install Cosign
         uses: sigstore/cosign-installer@v4.1.0
 
-      - name: Set package version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push ${{ matrix.service }}
-        id: build
-        uses: docker/build-push-action@v6
+      - uses: actions/download-artifact@v4
         with:
-          context: ${{ env.CONTROL_PLANE_DIR }}
-          file: ${{ env.CONTROL_PLANE_DIR }}/${{ matrix.dockerfile }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            SETUPTOOLS_SCM_PRETEND_VERSION=${{ steps.version.outputs.version }}
+          name: release-image-${{ matrix.service }}
+          path: ${{ runner.temp }}/release-image
+
+      - name: Load and recheck validated image
+        run: |
+          docker load --input "${RUNNER_TEMP}/release-image/image.tar"
+          python "${CONTROL_PLANE_DIR}/scripts/check_release_licenses.py" --image acr-${{ matrix.service }}:release-candidate
+
+      - name: Push the validated image without rebuilding
+        id: build
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            docker tag acr-${{ matrix.service }}:release-candidate "$tag"
+            docker push "$tag"
+          done <<< "$IMAGE_TAGS"
+          digest_ref=$(docker image inspect acr-${{ matrix.service }}:release-candidate --format '{{index .RepoDigests 0}}')
+          digest="${digest_ref##*@}"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v3
@@ -96,7 +214,9 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
 
   compliance-package:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     name: Build signed compliance package
+    needs: [build-images, build-python]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -144,9 +264,10 @@ jobs:
           retention-days: 30
 
   github-release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [docker-publish, compliance-package]
+    needs: [docker-publish, compliance-package, pypi-publish]
     permissions:
       contents: write
     steps:
@@ -170,7 +291,9 @@ jobs:
             dist/release-assets/${{ env.PACKAGE_BASENAME }}.sigstore.json
 
   pypi-publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     name: Publish to PyPI
+    needs: [build-images, build-python]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -178,19 +301,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # hatch-vcs needs full tag history
-
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Build package
-        run: |
-          python -m pip install --upgrade build
-          python -m build --outdir dist
-        working-directory: ${{ env.CONTROL_PLANE_DIR }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-python-distributions
+          path: ${{ env.CONTROL_PLANE_DIR }}/dist
+      - name: Recheck exact distributions before publishing
+        run: python "${CONTROL_PLANE_DIR}/scripts/check_release_licenses.py" --dist-dir "${CONTROL_PLANE_DIR}/dist"
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: ${{ env.CONTROL_PLANE_DIR }}/dist
-

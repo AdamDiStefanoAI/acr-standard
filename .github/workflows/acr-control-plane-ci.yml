@@ -7,12 +7,16 @@ on:
       - "implementations/acr-control-plane/**"
       - ".github/workflows/acr-control-plane-ci.yml"
       - ".github/workflows/acr-control-plane-security.yml"
+      - ".github/workflows/acr-control-plane-release.yml"
+      - "LICENSE"
   pull_request:
     branches: ["main"]
     paths:
       - "implementations/acr-control-plane/**"
       - ".github/workflows/acr-control-plane-ci.yml"
       - ".github/workflows/acr-control-plane-security.yml"
+      - ".github/workflows/acr-control-plane-release.yml"
+      - "LICENSE"
   workflow_dispatch:
 
 permissions:
@@ -28,6 +32,20 @@ defaults:
     working-directory: implementations/acr-control-plane
 
 jobs:
+  release-licenses:
+    name: Release license gate tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Test missing, altered and duplicate license rejection
+        run: python scripts/test_release_licenses.py
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -270,10 +288,14 @@ jobs:
           context: implementations/acr-control-plane
           file: implementations/acr-control-plane/${{ matrix.dockerfile }}
           push: false
-          load: ${{ matrix.service == 'protected-executor' }}
+          load: true
           cache-from: type=gha,scope=acr-${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=acr-${{ matrix.service }}
           tags: acr-${{ matrix.service }}:ci
+
+      - name: Verify release image and installed wheel licenses
+        if: matrix.service != 'protected-executor'
+        run: python scripts/check_release_licenses.py --image acr-${{ matrix.service }}:ci
 
       - name: Verify protected executor starts as non-root
         if: matrix.service == 'protected-executor'
