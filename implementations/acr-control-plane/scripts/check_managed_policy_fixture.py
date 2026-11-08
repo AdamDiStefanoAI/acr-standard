@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the deployment harness's two-agent fixture against real OPA, without Docker."""
+"""Run the two-agent fixture using OPA 0.70 installed on the trusted validation PATH."""
 
 from __future__ import annotations
 
@@ -23,8 +23,7 @@ from acr.policy_studio.distribution import build_active_runtime_bundle
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--opa", required=True)
-    args = parser.parse_args()
+    parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="acr-two-agent-opa-") as temp:
         root = Path(temp)
         extensions = root / "operator"
@@ -54,14 +53,14 @@ def main():
         artifact = build_active_runtime_bundle(releases, extensions=str(extensions))
         archive = root / "bundle.tar.gz"
         archive.write_bytes(artifact.bytes_data)
-        subprocess.run([args.opa, "check", "--bundle", str(archive)], check=True)
+        subprocess.run(["opa", "check", "--bundle", str(archive)], check=True)
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
         url = f"http://127.0.0.1:{port}"
         with (root / "opa.log").open("w+") as log:
             process = subprocess.Popen(
-                [args.opa, "run", "--server", f"--addr=127.0.0.1:{port}", "--bundle", str(archive)],
+                ["opa", "run", "--server", f"--addr=127.0.0.1:{port}", "--bundle", str(archive)],
                 stdout=log,
                 stderr=subprocess.STDOUT,
             )

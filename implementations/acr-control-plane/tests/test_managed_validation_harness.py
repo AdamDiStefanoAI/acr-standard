@@ -1,6 +1,8 @@
 """Regression checks for the disposable lifecycle harness, not policy mocks."""
 
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -86,3 +88,20 @@ def test_two_agents_cache_distinct_tokens(harness, monkeypatch):
         harness.evaluate({}, "upgrade-ci")
         harness.evaluate({}, "upgrade-ci-b")
     assert issued == ["/acr/agents/upgrade-ci/token", "/acr/agents/upgrade-ci-b/token"]
+
+
+def test_fixture_refuses_caller_selected_executable(tmp_path):
+    fixture = Path(__file__).parents[1] / "scripts/check_managed_policy_fixture.py"
+    marker = tmp_path / "executed"
+    executable = tmp_path / "untrusted-opa"
+    executable.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    executable.chmod(0o755)
+    result = subprocess.run(
+        [sys.executable, str(fixture), "--opa", str(executable)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "unrecognized arguments: --opa" in result.stderr
+    assert not marker.exists()

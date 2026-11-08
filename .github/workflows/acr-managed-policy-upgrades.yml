@@ -51,11 +51,14 @@ jobs:
           docker cp "$container:/opa" /tmp/acr-opa
           docker rm "$container"
           chmod +x /tmp/acr-opa
+          opa_bin=$(mktemp -d "${RUNNER_TEMP}/acr-opa-bin.XXXXXX")
+          install -m 755 /tmp/acr-opa "$opa_bin/opa"
+          echo "$opa_bin" >> "$GITHUB_PATH"
           env -u PYTHONPATH OPA_BINARY=/tmp/acr-opa /tmp/acr-managed-wheel/bin/python "$PWD/tests/helpers/managed_wheel_probe.py" --opa /tmp/acr-opa
       - name: Validate real OPA two-agent isolation and legacy operator dialect
         run: |
           mkdir -p managed-policy-evidence
-          env -u PYTHONPATH OPA_BINARY=/tmp/acr-opa /tmp/acr-managed-wheel/bin/python scripts/check_managed_policy_fixture.py --opa /tmp/acr-opa > managed-policy-evidence/opa-isolation-fixture.txt
+          env -u PYTHONPATH OPA_BINARY=/tmp/acr-opa /tmp/acr-managed-wheel/bin/python scripts/check_managed_policy_fixture.py > managed-policy-evidence/opa-isolation-fixture.txt
       - name: Build two distinct synthetic release images
         run: |
           set -eu
