@@ -16,6 +16,7 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+        fsGroup: 1000
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -25,83 +26,157 @@ spec:
                 matchLabels:
                   app: acr-gateway
               topologyKey: kubernetes.io/hostname
-      # Apply database migrations before the gateway container starts.
-      # Uses the same image so we never have to maintain a separate
-      # migration build. Alembic is idempotent — replicas racing each
-      # other are safe (the loser sees the schema already at head).
       initContainers:
-        - name: alembic-upgrade
-          image: acr-gateway:1.0.0
-          imagePullPolicy: IfNotPresent
-          command: ["run-migrations"]
-          envFrom:
-            - configMapRef:
-                name: acr-gateway-config
-            - secretRef:
-                name: acr-gateway-secret
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: 1000
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-          resources:
-            requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
-              cpu: 500m
-              memory: 256Mi
-          volumeMounts:
-            - name: tmp
-              mountPath: /tmp
+      - name: export-core-policy
+        image: acr-gateway:1.3.0
+        command:
+        - python
+        - -m
+        - acr.policy_studio.core_bundle
+        - export
+        - --output
+        - /managed
+        - --extensions
+        - /operator-policies
+        - --gateway-url
+        - http://127.0.0.1:8000
+        securityContext: &id001
+          runAsNonRoot: true
+          runAsUser: 1000
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: policy-compiler-tmp
+          mountPath: /tmp
+        - name: managed-policy
+          mountPath: /managed
+        - name: operator-policies
+          mountPath: /operator-policies
+          readOnly: true
+      - name: alembic-upgrade
+        image: acr-gateway:1.3.0
+        imagePullPolicy: IfNotPresent
+        command:
+        - run-migrations
+        envFrom:
+        - configMapRef:
+            name: acr-gateway-config
+        - secretRef:
+            name: acr-gateway-secret
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
       containers:
-        - name: gateway
-          image: acr-gateway:1.0.0
-          imagePullPolicy: IfNotPresent
-          ports:
-            - containerPort: 8000
-          envFrom:
-            - configMapRef:
-                name: acr-gateway-config
-            - secretRef:
-                name: acr-gateway-secret
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: 1000
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-          startupProbe:
-            httpGet:
-              path: /acr/health
-              port: 8000
-            failureThreshold: 24
-            periodSeconds: 5
-          readinessProbe:
-            httpGet:
-              path: /acr/ready
-              port: 8000
-            initialDelaySeconds: 10
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /acr/live
-              port: 8000
-            initialDelaySeconds: 15
-            periodSeconds: 15
-          resources:
-            requests:
-              cpu: 250m
-              memory: 256Mi
-            limits:
-              cpu: "1"
-              memory: 1Gi
-          volumeMounts:
-          - name: tmp
-            mountPath: /tmp
+      - name: gateway
+        image: acr-gateway:1.3.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: acr-gateway-config
+        - secretRef:
+            name: acr-gateway-secret
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        startupProbe:
+          httpGet:
+            path: /acr/health
+            port: 8000
+          failureThreshold: 24
+          periodSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /acr/ready
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /acr/live
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 15
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: '1'
+            memory: 1Gi
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: operator-policies
+          mountPath: /operator-policies
+          readOnly: true
+      - name: opa
+        image: openpolicyagent/opa:0.70.0
+        args:
+        - run
+        - --server
+        - --addr=127.0.0.1:8181
+        - --log-format=json
+        - --config-file=/managed/opa-config.yaml
+        securityContext: *id001
+        readinessProbe:
+          exec:
+            command:
+            - /opa
+            - eval
+            - --fail
+            - http.send({"method":"GET","url":"http://127.0.0.1:8181/health?bundles","timeout":"2s"}).status_code
+              == 200
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        volumeMounts:
+        - name: managed-policy
+          mountPath: /managed
+          readOnly: true
+        env:
+        - name: ACR_BUNDLE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: acr-gateway-secret
+              key: SERVICE_OPERATOR_API_KEY
       volumes:
+      - name: policy-compiler-tmp
+        emptyDir:
+          sizeLimit: 64Mi
       - name: tmp
         emptyDir: {}
+      - name: managed-policy
+        emptyDir: {}
+      - name: operator-policies
+        configMap:
+          name: acr-operator-policies

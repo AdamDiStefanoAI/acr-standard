@@ -14,6 +14,7 @@ from aiobreaker import CircuitBreaker, CircuitBreakerError
 from acr.common.errors import PolicyEngineError
 from acr.config import settings
 from acr.pillar2_policy.models import PolicyDecision, PolicyEvaluationResult
+from acr.policy_studio.core_bundle import core_identity, operator_identity
 
 logger = structlog.get_logger(__name__)
 
@@ -151,6 +152,18 @@ async def evaluate_policy(
 
     # Defensive: treat missing/null `result` as empty (deny-by-default still applies)
     result = data.get("result") or {}
+
+    # Check the identity returned in this exact OPA evaluation, not a prior
+    # readiness probe. A stale/missing/mixed bundle must never authorize work.
+    if not isinstance(result, dict) or result.get("core_identity") != core_identity():
+        raise PolicyEngineError("Missing, stale, or incompatible managed core policy bundle")
+
+    try:
+        expected_operator = operator_identity(settings.policy_extension_dir or None)
+    except (ValueError, OSError) as exc:
+        raise PolicyEngineError("Invalid operator policy configuration") from exc
+    if result.get("operator_identity") != expected_operator:
+        raise PolicyEngineError("Missing or stale operator policy bundle")
 
     deny_reasons: list[str] = result.get("deny", [])
     allow: bool = result.get("allow", False)

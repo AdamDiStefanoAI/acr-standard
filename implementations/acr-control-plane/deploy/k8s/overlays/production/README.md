@@ -19,7 +19,7 @@ It is opinionated on purpose. This path exists so platform and security teams ha
 Relative to `deploy/k8s/base`, this overlay:
 
 - removes the example secret from the runtime path and expects a real `ExternalSecret`
-- keeps bundle delivery on object storage and disables bundle auth so OPA can poll directly
+- retains published artifacts in object storage and uses authenticated, core-qualified bundle polling from each local OPA sidecar
 - assumes OIDC is the normal operator login path
 - replaces the base gateway and kill-switch network policy with a production egress allowlist
 - adds namespace pod-security labels
@@ -66,7 +66,7 @@ kubectl apply -k deploy/k8s/overlays/production
 - `kubectl -n acr-system get pods`
 - `kubectl -n acr-system rollout status deploy/acr-gateway`
 - `kubectl -n acr-system rollout status deploy/acr-killswitch`
-- `kubectl -n acr-system rollout status deploy/acr-opa`
+- Verify `/acr/ready` on each gateway Pod; OPA is a per-Pod sidecar, not a separate Deployment.
 - `curl https://acr.example.com/acr/health`
 - `curl https://acr.example.com/acr/ready`
 - validate OIDC login, policy activation, approval flow, evidence export, and executor reachability
@@ -82,3 +82,13 @@ This is the path that closes the earlier gaps:
 - one ingress and rollout model for production
 
 If you diverge from this overlay, treat it as a custom platform variant and review it accordingly.
+
+## Release-paired core policies
+
+Read [the managed upgrade guide](../../../../docs/managed-policy-upgrades.md) before migrating from 1.2.1. Preserve the operator ConfigMap and active database policies. Select one immutable gateway image for the gateway and both init containers. The checked-in `1.3.0` tag is an example, not permission to deploy or a claim the image is already published.
+
+Before rollout or rollback, pause approval processing and new evaluations, resolve
+or deny pending approvals, and drain in-flight approved executions. The managed
+identity gate applies to new OPA evaluations, not the preexisting approved-action
+execution path. See the managed upgrade guide for this unvalidated cross-release
+approval/replay boundary.

@@ -8,6 +8,7 @@ import pytest
 
 from acr.common.errors import PolicyEngineError
 from acr.pillar2_policy.engine import evaluate_policy
+from acr.policy_studio.core_bundle import core_identity, operator_identity
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -20,6 +21,9 @@ def _make_opa_client(status_code: int, json_data: dict):
     """Build a mock httpx.AsyncClient that returns a fixed OPA response."""
     mock_resp = MagicMock()
     mock_resp.status_code = status_code
+    if isinstance(json_data.get("result"), dict):
+        json_data["result"]["core_identity"] = core_identity()
+        json_data["result"]["operator_identity"] = operator_identity()
     mock_resp.json.return_value = json_data
     mock_resp.raise_for_status = MagicMock()
     mock_resp.request = MagicMock()
@@ -97,9 +101,11 @@ class TestOPADecisions:
     async def test_null_result_treated_as_empty(self):
         """OPA returns result=null → deny-by-default."""
         client = _make_opa_client(200, {"result": None})
-        with patch("acr.pillar2_policy.engine.httpx.AsyncClient", return_value=client):
-            result = await evaluate_policy(AGENT, ACTION, CONTEXT)
-        assert result.final_decision == "deny"
+        with (
+            patch("acr.pillar2_policy.engine.httpx.AsyncClient", return_value=client),
+            pytest.raises(PolicyEngineError, match="managed core"),
+        ):
+            await evaluate_policy(AGENT, ACTION, CONTEXT)
 
 
 class TestOPAContextDefaults:
@@ -112,7 +118,14 @@ class TestOPAContextDefaults:
             captured = json or {}
             mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {"result": {"allow": True, "deny": []}}
+            mock_resp.json.return_value = {
+                "result": {
+                    "allow": True,
+                    "deny": [],
+                    "core_identity": core_identity(),
+                    "operator_identity": operator_identity(),
+                }
+            }
             mock_resp.raise_for_status = MagicMock()
             mock_resp.request = MagicMock()
             return mock_resp
@@ -138,7 +151,14 @@ class TestOPAContextDefaults:
             captured = json or {}
             mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {"result": {"allow": True, "deny": []}}
+            mock_resp.json.return_value = {
+                "result": {
+                    "allow": True,
+                    "deny": [],
+                    "core_identity": core_identity(),
+                    "operator_identity": operator_identity(),
+                }
+            }
             mock_resp.raise_for_status = MagicMock()
             mock_resp.request = MagicMock()
             return mock_resp
@@ -209,7 +229,14 @@ class TestOPARetryLogic:
 
         ok_resp = MagicMock()
         ok_resp.status_code = 200
-        ok_resp.json.return_value = {"result": {"allow": True, "deny": []}}
+        ok_resp.json.return_value = {
+            "result": {
+                "allow": True,
+                "deny": [],
+                "core_identity": core_identity(),
+                "operator_identity": operator_identity(),
+            }
+        }
         ok_resp.raise_for_status = MagicMock()
         ok_resp.request = MagicMock()
 

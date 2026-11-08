@@ -86,7 +86,9 @@ Run the relevant focused tests while developing, then the full unit suite. Inclu
 
 #### Policy and integration checks
 
-For policy changes, install OPA **0.70.0** (the version used by the local stack and CI), then run:
+Policy export/administration and tests require OPA **0.70.0** (the version used
+by the local stack and CI). Install it from the official OPA release, place `opa`
+on `PATH` or set `OPA_BINARY` to its executable path, then run:
 
 ```bash
 opa check policies/
@@ -96,12 +98,16 @@ opa test policies/ -v
 Integration tests require Docker Compose v2 and a **disposable** local stack. The fixtures create/drop database tables and flush the selected Redis database. Never point them at a shared or production system. From the implementation directory, use a separate Compose project and unused local ports:
 
 ```bash
-docker compose -p acr-contributor-test up -d postgres redis opa
-# Wait for Postgres, Redis, and http://localhost:8181/health to be ready.
+export COMPOSE_FILE=docker-compose.yml:docker-compose.integration.yml
+export OPERATOR_API_KEYS_JSON='{"ci-operator-only":{"subject":"ci-operator","roles":["auditor"]}}'
+export SERVICE_OPERATOR_API_KEY=ci-operator-only
+docker compose -p acr-contributor-test up --build -d postgres redis opa
+# Wait for Postgres, Redis, and http://localhost:8181/health?bundles to be ready.
 ACR_ENV=test \
 DATABASE_URL=postgresql+asyncpg://acr:acr_dev_password@localhost:5432/acr_control_plane \
 REDIS_URL=redis://localhost:6379/1 \
 OPA_URL=http://localhost:8181 \
+POLICY_EXTENSION_DIR=operator-policies \
 RUN_INTEGRATION_TESTS=true \
 TEST_DATABASE_URL=postgresql+asyncpg://acr:acr_dev_password@localhost:5432/acr_control_plane \
 TEST_REDIS_URL=redis://localhost:6379/1 \

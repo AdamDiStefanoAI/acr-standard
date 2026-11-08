@@ -2,16 +2,15 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: acr-system
 resources:
-  - namespace.yaml
-  - rbac.yaml
-  - gateway-configmap.yaml
-  - gateway-deployment.yaml
-  - gateway-service.yaml
-  - killswitch-deployment.yaml
-  - killswitch-service.yaml
-  - opa-deployment.yaml
-  - opa-service.yaml
-  - networkpolicy.yaml
-  - pdbs.yaml
-  - hpas.yaml
-  - ingress.yaml
+- namespace.yaml
+- rbac.yaml
+- gateway-configmap.yaml
+- gateway-deployment.yaml
+- gateway-service.yaml
+- killswitch-deployment.yaml
+- killswitch-service.yaml
+- networkpolicy.yaml
+- pdbs.yaml
+- hpas.yaml
+- ingress.yaml
+- operator-policies.yaml

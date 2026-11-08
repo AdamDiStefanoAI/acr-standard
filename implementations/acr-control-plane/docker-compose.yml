@@ -48,19 +48,37 @@ services:
           cpus: "0.1"
           memory: 64M
 
+  # Export the core and operator policies from the same release as the gateway.
+  acr-policy-export:
+    image: ${ACR_GATEWAY_IMAGE:-acr-gateway:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: "0:0"
+    command: ["python", "-m", "acr.policy_studio.core_bundle", "export", "--output", "/managed", "--extensions", "/operator-policies", "--gateway-url", "http://acr-gateway:8000", "--replace"]
+    volumes:
+      - managed_policy:/managed
+      - ./operator-policies:/operator-policies:ro
+    restart: "no"
+
   # ── Open Policy Agent ──────────────────────────────────
   opa:
     image: openpolicyagent/opa:0.70.0
+    environment:
+      ACR_BUNDLE_API_KEY: ${SERVICE_OPERATOR_API_KEY:?Set an existing auditor-authorized service operator key}
     ports:
       - "8181:8181"
     volumes:
-      - ./policies:/policies:ro
+      - managed_policy:/managed:ro
+    depends_on:
+      acr-policy-export:
+        condition: service_completed_successfully
     command:
       - "run"
       - "--server"
       - "--addr=0.0.0.0:8181"
       - "--log-format=json"
-      - "/policies"
+      - "--config-file=/managed/opa-config.yaml"
     healthcheck:
       # The official OPA image contains /opa, not wget or a shell.
       test:
@@ -68,7 +86,7 @@ services:
         - /opa
         - eval
         - --fail
-        - 'http.send({"method": "GET", "url": "http://127.0.0.1:8181/health", "timeout": "2s"}).status_code == 200'
+        - 'http.send({"method": "GET", "url": "http://127.0.0.1:8181/health?bundles", "timeout": "2s"}).status_code == 200'
       interval: 5s
       timeout: 3s
       retries: 10
@@ -91,7 +109,7 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
       KILLSWITCH_SECRET: ${KILLSWITCH_SECRET:-killswitch_dev_secret_change_me}
-      OPERATOR_API_KEYS_JSON: ${OPERATOR_API_KEYS_JSON:-}
+      OPERATOR_API_KEYS_JSON: ${OPERATOR_API_KEYS_JSON:?Set operator keys including the bundle service key}
       ACR_ENV: ${ACR_ENV:-development}
       WEB_CONCURRENCY: ${KILLSWITCH_WORKERS:-2}
     depends_on:
@@ -118,6 +136,7 @@ services:
   # before starting, so the schema is always up-to-date and migrations cannot
   # be forgotten when running the stack locally or in CI.
   acr-migrate:
+    image: ${ACR_GATEWAY_IMAGE:-acr-gateway:local}
     build:
       context: .
       dockerfile: Dockerfile
@@ -138,6 +157,9 @@ services:
 
   # ── ACR Gateway (main service) ─────────────────────────
   acr-gateway:
+    volumes:
+      - ./operator-policies:/operator-policies:ro
+    image: ${ACR_GATEWAY_IMAGE:-acr-gateway:local}
     build:
       context: .
       dockerfile: Dockerfile
@@ -146,6 +168,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-acr}:${POSTGRES_PASSWORD:-acr_dev_password}@postgres:5432/${POSTGRES_DB:-acr_control_plane}
       REDIS_URL: redis://redis:6379/0
+      POLICY_BUNDLE_LOCAL_DIR: /tmp/policy-bundles
+      POLICY_EXTENSION_DIR: /operator-policies
       OPA_URL: http://opa:8181
       KILLSWITCH_URL: http://acr-killswitch:8443
       KILLSWITCH_SECRET: ${KILLSWITCH_SECRET:-killswitch_dev_secret_change_me}
@@ -159,8 +183,8 @@ services:
       WEBHOOK_URL: ${WEBHOOK_URL:-}
       WEBHOOK_HMAC_SECRET: ${WEBHOOK_HMAC_SECRET:-}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-      OPERATOR_API_KEYS_JSON: ${OPERATOR_API_KEYS_JSON:-}
-      SERVICE_OPERATOR_API_KEY: ${SERVICE_OPERATOR_API_KEY:-}
+      OPERATOR_API_KEYS_JSON: ${OPERATOR_API_KEYS_JSON:?Set operator keys including the bundle service key}
+      SERVICE_OPERATOR_API_KEY: ${SERVICE_OPERATOR_API_KEY:?Set an existing auditor-authorized service operator key}
       EXECUTE_ALLOWED_ACTIONS: ${EXECUTE_ALLOWED_ACTIONS:-false}
       TOOL_EXECUTOR_MAP_JSON: ${TOOL_EXECUTOR_MAP_JSON:-}
       EXECUTOR_HMAC_SECRET: ${EXECUTOR_HMAC_SECRET:-}
@@ -173,7 +197,7 @@ services:
       redis:
         condition: service_healthy
       opa:
-        condition: service_healthy
+        condition: service_started
       acr-killswitch:
         condition: service_healthy
       acr-migrate:
@@ -194,5 +218,6 @@ services:
           memory: 256M
 
 volumes:
+  managed_policy:
   postgres_data:
   redis_data:

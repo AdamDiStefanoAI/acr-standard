@@ -1,25 +1,24 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - ../../base
-  - external-secret.yaml
-  - networkpolicy-production.yaml
+- ../../base
+- external-secret.yaml
+- networkpolicy-production.yaml
 patches:
-  - path: namespace-patch.yaml
-  - path: gateway-configmap-patch.yaml
-  - path: gateway-deployment-patch.yaml
-  - path: killswitch-deployment-patch.yaml
-  - path: opa-deployment-patch.yaml
-  - path: ingress-patch.yaml
-  - path: remove-base-gateway-netpol.yaml
-  - path: remove-base-killswitch-netpol.yaml
+- path: namespace-patch.yaml
+- path: gateway-configmap-patch.yaml
+- path: gateway-deployment-patch.yaml
+- path: killswitch-deployment-patch.yaml
+- path: ingress-patch.yaml
+- path: remove-base-gateway-netpol.yaml
+- path: remove-base-killswitch-netpol.yaml
 images:
-  - name: acr-gateway
-    newName: ghcr.io/adamdistefanoai/acr-standard/acr-gateway
-    newTag: v1.1.0
-  - name: acr-killswitch
-    newName: ghcr.io/adamdistefanoai/acr-standard/acr-killswitch
-    newTag: v1.1.0
-  - name: openpolicyagent/opa
-    newName: openpolicyagent/opa
-    newTag: 0.63.0-rootless
+- name: acr-gateway
+  newName: ghcr.io/adamdistefanoai/acr-standard/acr-gateway
+  newTag: 1.3.0
+- name: acr-killswitch
+  newName: ghcr.io/adamdistefanoai/acr-standard/acr-killswitch
+  newTag: 1.3.0
+- name: openpolicyagent/opa
+  newName: openpolicyagent/opa
+  newTag: 0.70.0

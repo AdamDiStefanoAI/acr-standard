@@ -342,8 +342,15 @@ async def ready() -> JSONResponse:
 
     try:
         async with httpx.AsyncClient(base_url=settings.opa_url, timeout=3.0) as client:
-            resp = await client.get("/health")
+            from acr.policy_studio.core_bundle import core_identity, operator_identity
+
+            resp = await client.get("/v1/data/acr")
             resp.raise_for_status()
+            result = resp.json().get("result") or {}
+            if result.get("core_identity") != core_identity() or result.get(
+                "operator_identity"
+            ) != operator_identity(settings.policy_extension_dir or None):
+                raise ValueError("OPA has no compatible managed core bundle")
         checks["opa"] = "ok"
     except Exception:
         structlog.get_logger(__name__).warning("readiness_check_failed", dependency="opa")

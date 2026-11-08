@@ -19,14 +19,3 @@ spec:
   selector:
     matchLabels:
       app: acr-killswitch
----
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: acr-opa-pdb
-  namespace: acr-system
-spec:
-  minAvailable: 1
-  selector:
-    matchLabels:
-      app: acr-opa

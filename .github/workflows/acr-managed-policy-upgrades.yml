@@ -1,0 +1,118 @@
+name: ACR managed policy upgrade validation
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'implementations/acr-control-plane/**'
+      - '.github/workflows/acr-managed-policy-upgrades.yml'
+  pull_request:
+    paths:
+      - 'implementations/acr-control-plane/**'
+      - '.github/workflows/acr-managed-policy-upgrades.yml'
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  managed-upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: implementations/acr-control-plane
+    env:
+      COMPOSE_PROJECT_NAME: acr-managed-${{ github.run_id }}-${{ github.run_attempt }}
+      ACR_GATEWAY_IMAGE: acr-gateway:upgrade-ci-old
+      OPERATOR_API_KEYS_JSON: '{"ci-operator-only":{"subject":"ci-operator","roles":["agent_admin","security_admin","auditor","approver","killswitch_operator"]}}'
+      SERVICE_OPERATOR_API_KEY: ci-operator-only
+      JWT_SECRET_KEY: ci-jwt-only-not-a-production-secret-123456789012345
+      KILLSWITCH_SECRET: ci-kill-only-not-a-production-secret-12345678901234
+      ACR_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install validation tooling
+        run: python -m pip install PyYAML
+      - name: Test migration refusal and preservation
+        run: python scripts/test_policy_migration.py
+      - name: Validate clean wheel outside checkout with real OPA
+        run: |
+          set -eu
+          python -m pip install build
+          SETUPTOOLS_SCM_PRETEND_VERSION=1.3.0 python -m build --wheel
+          python -m venv /tmp/acr-managed-wheel
+          /tmp/acr-managed-wheel/bin/pip install dist/*.whl
+          docker pull openpolicyagent/opa:0.70.0
+          container=$(docker create openpolicyagent/opa:0.70.0)
+          docker cp "$container:/opa" /tmp/acr-opa
+          docker rm "$container"
+          chmod +x /tmp/acr-opa
+          opa_bin=$(mktemp -d "${RUNNER_TEMP}/acr-opa-bin.XXXXXX")
+          install -m 755 /tmp/acr-opa "$opa_bin/opa"
+          echo "$opa_bin" >> "$GITHUB_PATH"
+          env -u PYTHONPATH OPA_BINARY=/tmp/acr-opa /tmp/acr-managed-wheel/bin/python "$PWD/tests/helpers/managed_wheel_probe.py" --opa /tmp/acr-opa
+      - name: Validate real OPA two-agent isolation and legacy operator dialect
+        run: |
+          mkdir -p managed-policy-evidence
+          env -u PYTHONPATH OPA_BINARY=/tmp/acr-opa /tmp/acr-managed-wheel/bin/python scripts/check_managed_policy_fixture.py > managed-policy-evidence/opa-isolation-fixture.txt
+      - name: Build two distinct synthetic release images
+        run: |
+          set -eu
+          mkdir -p managed-policy-evidence
+          git rev-parse HEAD > managed-policy-evidence/revision.txt
+          cat > operator-policies/sentinel.rego <<'REGO'
+          package acr
+          import future.keywords.if
+          import future.keywords.contains
+          deny contains "Local migration sentinel" if { input.action.parameters.migration_sentinel == true }
+          REGO
+          # Deliberately preserve valid pre-Rego-v1 syntax without future imports.
+          cat > operator-policies/legacy_v0.rego <<'REGO'
+          package acr
+          deny["Legacy v0 sentinel"] { input.action.parameters.legacy_v0_sentinel == true }
+          REGO
+          docker build -t acr-gateway:upgrade-ci-old .
+          # Deliberately alter core bytes, preserving semantics, to exercise identity rollover.
+          cp src/acr/policy_studio/core/common.rego /tmp/acr-core-original.rego
+          printf '\n# Synthetic release-next marker for CI only.\n' >> src/acr/policy_studio/core/common.rego
+          docker build -t acr-gateway:upgrade-ci-next .
+          cp /tmp/acr-core-original.rego src/acr/policy_studio/core/common.rego
+          docker build -f Dockerfile.killswitch -t acr-killswitch:upgrade-ci .
+          docker compose build acr-killswitch
+      - name: Docker upgrade, stale core refusal and rollback
+        run: python scripts/managed_policy_validation.py docker
+      - name: Capture and stop Docker stack
+        if: always()
+        run: |
+          docker compose logs --no-color --tail 200 > managed-policy-evidence/docker.log
+          docker compose down -v --remove-orphans
+      - name: Create isolated Kubernetes cluster
+        uses: helm/kind-action@v1.12.0
+        with:
+          cluster_name: acr-managed-ci
+          wait: 120s
+      - name: Render and verify production overlay contract
+        run: |
+          kubectl kustomize deploy/k8s/overlays/production > managed-policy-evidence/production-rendered.yaml
+          python scripts/check_managed_overlay.py managed-policy-evidence/production-rendered.yaml
+      - name: Load release artifacts into disposable cluster
+        run: kind load docker-image --name acr-managed-ci acr-gateway:upgrade-ci-old acr-gateway:upgrade-ci-next acr-killswitch:upgrade-ci
+      - name: Kubernetes two-replica rollout and rollback
+        run: python scripts/managed_policy_validation.py kind
+      - name: Capture Kubernetes evidence
+        if: always()
+        run: |
+          kubectl --context kind-acr-managed-ci -n acr-system get pods -o wide > managed-policy-evidence/kind-pods.txt || true
+          kubectl --context kind-acr-managed-ci -n acr-system get events --sort-by=.metadata.creationTimestamp > managed-policy-evidence/kind-events.txt || true
+          kubectl --context kind-acr-managed-ci -n acr-system logs -l app=acr-gateway --all-containers --tail=200 --prefix > managed-policy-evidence/kind.log || true
+          kind delete cluster --name acr-managed-ci
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: managed-policy-upgrades-${{ github.run_id }}-${{ github.run_attempt }}
+          path: implementations/acr-control-plane/managed-policy-evidence/
+          retention-days: 3

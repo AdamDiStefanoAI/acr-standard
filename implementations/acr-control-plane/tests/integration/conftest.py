@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -30,6 +31,17 @@ os.environ["KILLSWITCH_SECRET"] = "integration_killswitch_secret_not_for_product
 os.environ["SCHEMA_BOOTSTRAP_MODE"] = "create"
 os.environ["STRICT_DEPENDENCY_STARTUP"] = "false"
 os.environ["EXECUTE_ALLOWED_ACTIONS"] = "false"
+
+
+@pytest.fixture(autouse=True)
+def configured_operator_extensions(monkeypatch):
+    """Match the services-only export even when parent conftest imported settings first."""
+    from acr.config import settings
+
+    extensions = os.environ.get(
+        "POLICY_EXTENSION_DIR", str(Path(__file__).resolve().parents[2] / "operator-policies")
+    )
+    monkeypatch.setattr(settings, "policy_extension_dir", extensions)
 
 
 # asyncpg pools and the app's cached async clients must stay on the same loop

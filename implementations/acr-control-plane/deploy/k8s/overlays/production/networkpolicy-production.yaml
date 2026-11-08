@@ -8,81 +8,74 @@ spec:
     matchLabels:
       app: acr-gateway
   policyTypes:
-    - Ingress
-    - Egress
+  - Ingress
+  - Egress
   ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx
-      ports:
-        - protocol: TCP
-          port: 8000
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 8000
   egress:
-    - to:
-        - namespaceSelector: {}
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    - to:
-        - podSelector:
-            matchLabels:
-              app: acr-opa
-      ports:
-        - protocol: TCP
-          port: 8181
-    - to:
-        - podSelector:
-            matchLabels:
-              app: acr-killswitch
-      ports:
-        - protocol: TCP
-          port: 8443
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              acr.io/network-zone: protected-executors
-      ports:
-        - protocol: TCP
-          port: 443
-    - to:
-        - ipBlock:
-            cidr: 203.0.113.10/32
-      ports:
-        - protocol: TCP
-          port: 5432
-    - to:
-        - ipBlock:
-            cidr: 203.0.113.20/32
-      ports:
-        - protocol: TCP
-          port: 6379
-    - to:
-        - ipBlock:
-            cidr: 203.0.113.30/32
-      ports:
-        - protocol: TCP
-          port: 443
-    - to:
-        - ipBlock:
-            cidr: 203.0.113.40/32
-      ports:
-        - protocol: TCP
-          port: 443
-    - to:
-        - ipBlock:
-            cidr: 203.0.113.50/32
-      ports:
-        - protocol: TCP
-          port: 443
-    - to:
-        - ipBlock:
-            cidr: 203.0.113.60/32
-      ports:
-        - protocol: TCP
-          port: 443
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - podSelector:
+        matchLabels:
+          app: acr-killswitch
+    ports:
+    - protocol: TCP
+      port: 8443
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          acr.io/network-zone: protected-executors
+    ports:
+    - protocol: TCP
+      port: 443
+  - to:
+    - ipBlock:
+        cidr: 203.0.113.10/32
+    ports:
+    - protocol: TCP
+      port: 5432
+  - to:
+    - ipBlock:
+        cidr: 203.0.113.20/32
+    ports:
+    - protocol: TCP
+      port: 6379
+  - to:
+    - ipBlock:
+        cidr: 203.0.113.30/32
+    ports:
+    - protocol: TCP
+      port: 443
+  - to:
+    - ipBlock:
+        cidr: 203.0.113.40/32
+    ports:
+    - protocol: TCP
+      port: 443
+  - to:
+    - ipBlock:
+        cidr: 203.0.113.50/32
+    ports:
+    - protocol: TCP
+      port: 443
+  - to:
+    - ipBlock:
+        cidr: 203.0.113.60/32
+    ports:
+    - protocol: TCP
+      port: 443
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -94,34 +87,34 @@ spec:
     matchLabels:
       app: acr-killswitch
   policyTypes:
-    - Ingress
-    - Egress
+  - Ingress
+  - Egress
   ingress:
-    - from:
-        - podSelector:
-            matchLabels:
-              app: acr-gateway
-      ports:
-        - protocol: TCP
-          port: 8443
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              acr.io/network-zone: operations
-      ports:
-        - protocol: TCP
-          port: 8443
+  - from:
+    - podSelector:
+        matchLabels:
+          app: acr-gateway
+    ports:
+    - protocol: TCP
+      port: 8443
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          acr.io/network-zone: operations
+    ports:
+    - protocol: TCP
+      port: 8443
   egress:
-    - to:
-        - namespaceSelector: {}
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    - to:
-        - ipBlock:
-            cidr: 203.0.113.20/32
-      ports:
-        - protocol: TCP
-          port: 6379
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - ipBlock:
+        cidr: 203.0.113.20/32
+    ports:
+    - protocol: TCP
+      port: 6379

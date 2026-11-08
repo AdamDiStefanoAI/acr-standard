@@ -353,11 +353,14 @@ ACR_ENV=test python -m pytest tests/ --ignore=tests/integration -v --cov=src/acr
 ### Run without the full Docker stack
 
 ```bash
-docker-compose up postgres redis opa acr-killswitch
+export OPERATOR_API_KEYS_JSON='{"dev-operator-key":{"subject":"dev-operator","roles":["agent_admin","approver","security_admin","auditor","killswitch_operator"]}}'
+export SERVICE_OPERATOR_API_KEY=dev-operator-key
+docker compose -f docker-compose.yml -f docker-compose.integration.yml up --build -d postgres redis opa acr-killswitch
 
 DATABASE_URL=postgresql+asyncpg://acr:acr_dev_password@localhost:5432/acr_control_plane \
 REDIS_URL=redis://localhost:6379/0 \
 OPA_URL=http://localhost:8181 \
+POLICY_EXTENSION_DIR=operator-policies \
 KILLSWITCH_URL=http://localhost:8443 \
 OPERATOR_API_KEYS_JSON='{"dev-operator-key":{"subject":"dev-operator","roles":["agent_admin","approver","security_admin","auditor","killswitch_operator"]}}' \
 SERVICE_OPERATOR_API_KEY=dev-operator-key \
@@ -414,14 +417,20 @@ base64 decoding. This does not make unrestricted shell execution safe.
 
 ### Upgrading the control plane and policies
 
-The Python package and OPA policies are separate deployment artifacts. A
-`pip install --upgrade acr-control-plane` updates Python dependencies and code,
-but does not update the policies loaded by your OPA service. Deploy the
-`policies/` directory or a rebuilt policy bundle from the matching release tag
-as well, preserving and retesting any operator-specific rules. The Compose
-example mounts `./policies` from the source checkout into OPA; updating only
-the gateway image does not update that mount. Verify policy decisions against
-the running OPA service before resuming agent execution.
+From 1.3.0, the Python wheel and gateway image include matching core policies.
+The gateway image also includes OPA 0.70.0 for policy compilation. Standalone
+Python policy export/administration requires that compiler installed separately
+and selected with `OPA_BINARY` or `PATH`; SDK-only use does not.
+Use the coordinated [managed upgrade and rollback procedure](docs/managed-policy-upgrades.md)
+to update OPA's pinned configuration while preserving operator policies and active
+Studio releases. Existing deployments need the one-time migration; replacing only
+a legacy gateway image does not update an old filesystem-mounted policy tree.
+
+The identity checks gate new policy evaluations, not every downstream execution.
+The preexisting approved-action path executes without a fresh OPA evaluation.
+Pause approval processing and resolve or drain pending approvals before upgrade,
+rollback, or cutover. Approved-action/replay behavior across releases is not
+validated by the managed upgrade workflow.
 
 ## Project Layout
 
@@ -461,3 +470,7 @@ If the answer is "the prompt," "the app code," or "we’d catch it in logs," thi
 Apache 2.0. See [LICENSE](LICENSE).
 
 Based on the [ACR Framework specification](https://github.com/AdamDiStefanoAI/acr-standard).
+
+## Managed policy release upgrades
+
+The gateway image now includes its matching core OPA rules. Read [the migration and rollback guide](docs/managed-policy-upgrades.md) before updating an existing deployment. Operator policies stay separate, and readiness and new policy evaluations fail closed until OPA reports the matching core. Previously approved-action execution is outside this check; follow the guide’s approval-processing prerequisite. Compose requires an auditor-authorized `SERVICE_OPERATOR_API_KEY` also configured in `OPERATOR_API_KEYS_JSON`.
