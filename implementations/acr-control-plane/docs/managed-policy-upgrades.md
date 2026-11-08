@@ -140,7 +140,9 @@ production configuration and does not exercise dynamic policy releases.
 different core digests and exercises actual Docker and disposable kind Kubernetes
 upgrade/rollback. It checks custom policy and active Studio release preservation,
 readiness, allow/deny outcomes, and stale-core refusal. The Kubernetes test rolls
-two gateway replicas and checks readiness per Pod. It does not deploy to production
+two gateway replicas and checks readiness per Pod. It also requires the kill-switch
+Deployment to become ready and verifies synthetic kill/status/restore operations
+before upgrade, after upgrade, and after rollback. It does not deploy to production
 or call real enterprise executors. The separate full-stack workflow verifies
 execution against a synthetic protected executor. The migration checks run offline.
 

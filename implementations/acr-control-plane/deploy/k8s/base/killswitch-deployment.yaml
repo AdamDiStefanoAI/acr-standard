@@ -27,7 +27,7 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
         - name: killswitch
-          image: acr-killswitch:1.0.0
+          image: acr-killswitch:1.3.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8443
@@ -58,7 +58,7 @@ spec:
               drop: ["ALL"]
           startupProbe:
             httpGet:
-              path: /acr/health
+              path: /health
               port: 8443
             failureThreshold: 24
             periodSeconds: 5

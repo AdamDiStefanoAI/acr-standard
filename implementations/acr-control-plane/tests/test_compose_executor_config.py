@@ -93,3 +93,16 @@ def test_host_static_paths_match_exported_operator_policy_identity(tmp_path):
             bundle.extractfile("bundle/extensions/customer_support.rego").read()
             == (root / host_directory / "customer_support.rego").read_bytes()
         )
+
+
+def test_kubernetes_killswitch_probes_match_real_service_routes():
+    from acr.pillar5_containment.service import app
+
+    root = Path(__file__).resolve().parents[1]
+    deployment = yaml.safe_load((root / "deploy/k8s/base/killswitch-deployment.yaml").read_text())
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    get_routes = {route.path for route in app.routes if "GET" in getattr(route, "methods", set())}
+    expected = {"startupProbe": "/health", "readinessProbe": "/ready", "livenessProbe": "/health"}
+    for probe, path in expected.items():
+        assert container[probe]["httpGet"] == {"path": path, "port": 8443}
+        assert path in get_routes

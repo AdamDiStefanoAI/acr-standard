@@ -186,6 +186,65 @@ def kubectl(*args, **kw):
     return run("kubectl", "--context", "kind-acr-managed-ci", *args, **kw)
 
 
+def validate_kind_killswitch(label):
+    """Require the real Pod and service, then exercise a synthetic agent kill/restore."""
+    kubectl("-n", "acr-system", "rollout", "status", "deployment/acr-killswitch", "--timeout=240s")
+    kubectl(
+        "-n",
+        "acr-system",
+        "wait",
+        "--for=condition=Ready",
+        "pod",
+        "-l",
+        "app=acr-killswitch",
+        "--timeout=120s",
+    )
+    probe = """
+import json
+import os
+import urllib.request
+base = "http://acr-killswitch:8443"
+headers = {
+    "Content-Type": "application/json",
+    "X-Killswitch-Secret": os.environ["KILLSWITCH_SECRET"],
+    "X-Operator-API-Key": os.environ["SERVICE_OPERATOR_API_KEY"],
+}
+agent = "managed-killswitch-ci"
+def call(path, body=None):
+    request = urllib.request.Request(
+        base + path, data=json.dumps(body).encode() if body is not None else None,
+        headers=headers,
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        assert response.status == 200
+        return json.load(response)
+assert call("/health")["status"] == "healthy"
+assert call("/ready")["status"] == "healthy"
+try:
+    assert call("/acr/kill", {"agent_id": agent, "reason": "Disposable kind validation"})["is_killed"] is True
+    assert call("/acr/kill/status/" + agent)["is_killed"] is True
+finally:
+    assert call("/acr/kill/restore", {"agent_id": agent})["is_killed"] is False
+assert call("/acr/kill/status/" + agent)["is_killed"] is False
+print("PASS: kill-switch ready, synthetic kill/status/restore")
+"""
+    result = kubectl(
+        "-n",
+        "acr-system",
+        "exec",
+        "deployment/acr-gateway",
+        "-c",
+        "gateway",
+        "--",
+        "python",
+        "-c",
+        probe,
+        capture_output=True,
+    )
+    OUT.joinpath(label + "-killswitch.txt").write_text(result.stdout)
+    print(result.stdout, end="")
+
+
 def kind_test():
     # Render the actual supported base, replacing only disposable infrastructure/config.
     rendered = kubectl("kustomize", "deploy/k8s/base", capture_output=True).stdout
@@ -304,6 +363,7 @@ def kind_test():
     try:
         seed()
         assert_policy("kind-before")
+        validate_kind_killswitch("kind-before")
         for label, image in [
             ("kind-upgrade", "acr-gateway:upgrade-ci-next"),
             ("kind-rollback", "acr-gateway:upgrade-ci-old"),
@@ -325,6 +385,7 @@ def kind_test():
             )
             proc = forward()
             assert_policy(label)
+            validate_kind_killswitch(label)
             # Verify each of the two Pods, not just the Service's chosen endpoint.
             pods = json.loads(
                 kubectl(
