@@ -78,9 +78,26 @@ def extension_files(directory: str | Path | None) -> dict[str, bytes]:
     # Inspect every file, including Kubernetes projection backing files, before
     # selecting the visible Rego entries for the aggregate.
     projected = (root / "..data").is_symlink()
+    backing = (root / "..data").resolve() if projected else None
+    if backing is not None and (
+        backing.parent != root.resolve()
+        or not backing.is_dir()
+        or not backing.name.startswith("..")
+    ):
+        raise ValueError(
+            "Unsupported Kubernetes projection target; expected a backing directory within the policy root"
+        )
     for path in sorted(root.rglob("*")):
         if not path.resolve().is_relative_to(root.resolve()):
             raise ValueError(f"Policy symlink escapes extension directory: {path}")
+        relative = path.relative_to(root)
+        is_backing = backing is not None and relative.parts[0] == backing.name
+        if projected and any(part.startswith("..") for part in relative.parts):
+            recognized_backing = is_backing and not any(
+                part.startswith("..") for part in relative.parts[1:]
+            )
+            if path != root / "..data" and not recognized_backing:
+                raise ValueError(f"Unrecognized hidden operator policy entry: {path}")
         if path.is_dir():
             if path.is_symlink() and not (projected and path == root / "..data"):
                 raise ValueError(f"Policy directory symlink is not supported: {path}")
@@ -95,10 +112,17 @@ def extension_files(directory: str | Path | None) -> dict[str, bytes]:
                 "and .gitkeep are supported. Convert data-dependent policies explicitly "
                 "before migration; do not discard their data documents."
             )
-        if projected and any(part.startswith("..") for part in path.relative_to(root).parts):
-            continue  # Visible projected files are included once, not their backing copies.
         if path.name.endswith("_test.rego"):
-            continue
+            raise ValueError(
+                f"Unsupported test-suffix operator policy: {path}; filenames do not prove "
+                "a module is test-only. Review and rename runtime modules explicitly, "
+                "or use migration to omit byte-identical reviewed stock tests."
+            )
+        if is_backing:
+            visible = root.joinpath(*relative.parts[1:])
+            if not visible.is_file() or visible.resolve() != path.resolve():
+                raise ValueError(f"Unmapped Kubernetes policy backing file: {path}")
+            continue  # Only the verified backing copy of a visible file is deduplicated.
         payload = path.read_bytes()
         if path.name in CORE_FILES:
             if payload != sources[path.name]:

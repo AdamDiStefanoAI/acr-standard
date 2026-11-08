@@ -58,7 +58,6 @@ def test_extensions_preserved_and_core_overrides_rejected(tmp_path):
         b'package acr\ndeny contains "operator deny" if { input.action.tool_name == "custom" }\n'
     )
     (ext / "custom.rego").write_bytes(custom)
-    (ext / "ignored_test.rego").write_text("not runtime code")
     for name, contents in core_sources().items():
         (ext / name).write_bytes(contents)
     assert extension_files(ext) == {"bundle/extensions/custom.rego": custom}
@@ -431,3 +430,105 @@ def test_operator_directory_symlink_refused_instead_of_silently_skipped(tmp_path
     (root / "linked").symlink_to("real", target_is_directory=True)
     with pytest.raises(ValueError, match="directory symlink"):
         extension_files(root)
+
+
+@pytest.mark.parametrize("projected", [False, True])
+def test_test_suffix_operator_policy_refused_without_output(tmp_path, projected):
+    root = tmp_path / "operator"
+    root.mkdir()
+    backing = root / "..2026" if projected else root
+    backing.mkdir(exist_ok=True)
+    filename = "customer_override_test.rego"
+    contents = 'package acr\nimport future.keywords.contains\nimport future.keywords.if\ndeny contains "operator safeguard" if { true }'
+    (backing / filename).write_text(contents)
+    if projected:
+        (root / "..data").symlink_to("..2026", target_is_directory=True)
+        (root / filename).symlink_to(f"..data/{filename}")
+    with pytest.raises(ValueError, match="test-suffix"):
+        export_bundle(tmp_path / "output", root)
+    with pytest.raises(ValueError, match="test-suffix"):
+        build_active_runtime_bundle([], extensions=str(root))
+    with pytest.raises(ValueError, match="test-suffix"):
+        operator_identity(root)
+    assert not (tmp_path / "output").exists()
+    assert (backing / filename).read_text() == contents
+
+
+@pytest.mark.skipif(not OPA, reason="set OPA_BINARY to run real OPA checks")
+def test_real_opa_test_suffix_runtime_deny_cannot_silently_become_allow(tmp_path):
+    root = tmp_path / "legacy"
+    root.mkdir()
+    for name, contents in core_sources().items():
+        (root / name).write_bytes(contents)
+    (root / "customer_override_test.rego").write_text(
+        "package acr\nimport future.keywords.contains\nimport future.keywords.if\n"
+        'deny contains "operator safeguard" if { input.action.tool_name == "shell" }'
+    )
+    input_path = tmp_path / "input.json"
+    input_path.write_text(
+        json.dumps(
+            {
+                "agent": {"allowed_tools": ["shell"], "forbidden_tools": [], "boundaries": {}},
+                "action": {"tool_name": "shell", "parameters": {}},
+                "context": {},
+            }
+        )
+    )
+    process = subprocess.run(
+        [OPA, "eval", "-d", str(root), "-i", str(input_path), "--format=json", "data.acr"],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    value = json.loads(process.stdout)["result"][0]["expressions"][0]["value"]
+    assert "operator safeguard" in value["deny"]
+    assert value["allow"] is False
+    with pytest.raises(ValueError, match="test-suffix"):
+        export_bundle(tmp_path / "managed", root)
+    with pytest.raises(ValueError, match="test-suffix"):
+        build_active_runtime_bundle([], extensions=str(root))
+    assert not (tmp_path / "managed").exists()
+
+
+async def test_test_suffix_policy_blocks_previously_loaded_decisions(tmp_path, monkeypatch):
+    from acr.config import settings
+
+    loaded_identity = operator_identity(tmp_path)
+    (tmp_path / "customer_override_test.rego").write_text(
+        'package acr\ndeny contains "operator safeguard" if { true }'
+    )
+    monkeypatch.setattr(settings, "policy_extension_dir", str(tmp_path))
+    result = {"allow": True, "core_identity": core_identity(), "operator_identity": loaded_identity}
+    with (
+        patch(
+            "acr.pillar2_policy.engine.opa_breaker.call_async",
+            new=AsyncMock(return_value={"result": result}),
+        ),
+        pytest.raises(PolicyEngineError, match="Invalid operator policy configuration"),
+    ):
+        await evaluate_policy({}, {}, {})
+
+
+@pytest.mark.parametrize("hidden", ["..custom.rego", "..custom/deny.rego", "..old/deny.rego"])
+def test_projection_refuses_unknown_hidden_policy_entries(tmp_path, hidden):
+    backing = tmp_path / "..2026"
+    backing.mkdir()
+    (backing / "custom.rego").write_text('package acr\ndeny contains "known" if { false }')
+    (tmp_path / "..data").symlink_to("..2026", target_is_directory=True)
+    (tmp_path / "custom.rego").symlink_to("..data/custom.rego")
+    hidden_path = tmp_path / hidden
+    hidden_path.parent.mkdir(exist_ok=True)
+    hidden_path.write_text('package acr\ndeny contains "hidden safeguard" if { true }')
+    with pytest.raises(ValueError, match="Unrecognized hidden"):
+        extension_files(tmp_path)
+
+
+def test_projection_refuses_unmapped_backing_policy(tmp_path):
+    backing = tmp_path / "..2026"
+    backing.mkdir()
+    (backing / "hidden.rego").write_text(
+        'package acr\ndeny contains "hidden safeguard" if { true }'
+    )
+    (tmp_path / "..data").symlink_to("..2026", target_is_directory=True)
+    with pytest.raises(ValueError, match="Unmapped Kubernetes"):
+        extension_files(tmp_path)

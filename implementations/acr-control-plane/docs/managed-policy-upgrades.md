@@ -44,7 +44,11 @@ claim that a matching core identity reauthorizes stored approvals.
    Retain the old immutable gateway image and release configuration for rollback.
 2. Run `python scripts/migrate_operator_policies.py policies/acr operator-policies`.
    This copies customer-support and custom `.rego` files without modifying the
-   source. Exact old shipped core files and test modules are excluded. Changed
+   source. Exact old shipped core files and only the byte-identical reviewed
+   1.2.1 `content_safety_test.rego` are excluded. Unknown or modified `*_test.rego`
+   files cause refusal before copying: the suffix does not prove a rule is
+   test-only. Review these files and rename intended runtime modules without
+   `_test` before retrying. Changed
    core or conflicting destination files cause an actionable refusal before any
    copies. Extract reviewed local core modifications into separate extension rules
    before retrying. Never delete those modifications just to make migration pass.
@@ -113,7 +117,10 @@ read during bundle assembly; they are never silently overwritten by the image.
 
 Use `python -m acr.policy_studio.core_bundle export --output NEW_DIRECTORY
 --extensions operator-policies --gateway-url http://127.0.0.1:8000` after installing
-the exact release wheel. Export refuses different existing output by default;
+the exact release wheel. First migrate a legacy `policies/acr` directory into
+`operator-policies`; passing the legacy directory directly is not supported. The
+exporter rejects all operator `*_test.rego` files rather than silently ignoring
+potential runtime rules. Export refuses different existing output by default;
 `--replace` changes only its three generated artifacts, not operator files.
 
 Run OPA with `run --server --config-file=NEW_DIRECTORY/opa-config.yaml`, set

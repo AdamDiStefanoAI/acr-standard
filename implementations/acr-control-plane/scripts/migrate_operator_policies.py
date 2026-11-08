@@ -9,6 +9,10 @@ from pathlib import Path
 # Reviewed pre-managed core hashes; customized core requires an explicit review.
 LEGACY_CORE = json.loads((Path(__file__).with_name("legacy-core-hashes.json")).read_text())
 
+LEGACY_STOCK_TESTS = json.loads(
+    (Path(__file__).with_name("legacy-stock-test-hashes.json")).read_text()
+)
+
 
 def migrate(source: Path, destination: Path) -> None:
     files = sorted(source.rglob("*.rego"))
@@ -27,9 +31,15 @@ def migrate(source: Path, destination: Path) -> None:
             )
     copies = []
     for path in files:
-        if path.name.endswith("_test.rego"):
-            continue
         content = path.read_bytes()
+        if path.name.endswith("_test.rego"):
+            if hashlib.sha256(content).hexdigest() != LEGACY_STOCK_TESTS.get(path.name):
+                raise SystemExit(
+                    f"Unknown or modified test-suffix policy {path}; nothing copied. "
+                    "A *_test.rego file may contain runtime rules. Review it and rename "
+                    "any intended runtime module without the test suffix before retrying."
+                )
+            continue
         if path.name in LEGACY_CORE:
             if hashlib.sha256(content).hexdigest() != LEGACY_CORE[path.name]:
                 raise SystemExit(f"Customized core requires manual review; nothing copied: {path}")

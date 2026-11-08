@@ -30,6 +30,7 @@ with tempfile.TemporaryDirectory() as temp:
     ).read_bytes()
     assert (destination / "custom.rego").read_bytes() == (source / "custom.rego").read_bytes()
     assert not (destination / "common.rego").exists()
+    assert not (destination / "content_safety_test.rego").exists()
     migrate(source, destination)
     (destination / "custom.rego").write_text("keep operator destination")
     try:
@@ -75,3 +76,32 @@ for name in ("data.json", "data.yaml", "data.yml", "policies.tar.gz", ".manifest
         assert digest_tree(destination) == retained
         assert not (destination / "custom.rego").exists()
 print("PASS: unsupported data/bundle inputs refuse before any copies; source/destination unchanged")
+
+# Test suffixes are only a naming convention, not proof that a module is inert.
+for name in ("customer_override_test.rego", "content_safety_test.rego"):
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        source = root / "legacy"
+        source.mkdir()
+        (source / "aaa_custom.rego").write_text("package acr\n# copy candidate before refusal\n")
+        (source / name).write_text(
+            "package acr\nimport future.keywords.if\nimport future.keywords.contains\n"
+            'deny contains "critical runtime restriction" if { true }\n'
+        )
+        before = digest_tree(source)
+        destination = root / "operator"
+        destination.mkdir()
+        (destination / "existing.rego").write_text("package acr\n# preserve existing\n")
+        retained = digest_tree(destination)
+        try:
+            migrate(source, destination)
+            raise AssertionError("Silently dropped runtime rule with test suffix")
+        except SystemExit as error:
+            assert "nothing copied" in str(error)
+            assert "rename" in str(error)
+        assert digest_tree(source) == before
+        assert digest_tree(destination) == retained
+        assert not (destination / "aaa_custom.rego").exists()
+print(
+    "PASS: unknown/modified test-suffix rules refuse atomically; only verified stock test is omitted"
+)
