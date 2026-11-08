@@ -474,3 +474,9 @@ Based on the [ACR Framework specification](https://github.com/AdamDiStefanoAI/ac
 ## Managed policy release upgrades
 
 The gateway image now includes its matching core OPA rules. Read [the migration and rollback guide](docs/managed-policy-upgrades.md) before updating an existing deployment. Operator policies stay separate, and readiness and new policy evaluations fail closed until OPA reports the matching core. Previously approved-action execution is outside this check; follow the guide’s approval-processing prerequisite. Compose requires an auditor-authorized `SERVICE_OPERATOR_API_KEY` also configured in `OPERATOR_API_KEYS_JSON`.
+
+## Release packaging
+
+Before publishing, follow the [release packaging checklist](docs/release-checklist.md).
+CI and release validation check the full project license in both container images,
+the installed package, the wheel and the source distribution.
