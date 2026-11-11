@@ -120,6 +120,10 @@ async def register_agent(
 ) -> AgentResponse:
     """Register a new agent and return its manifest."""
     record = await registry.register_agent(db, req)
+    # The next request may immediately issue a token on another connection.
+    # Yield-dependency cleanup can occur after response delivery in FastAPI.
+    await db.commit()
+    await db.refresh(record)
     return AgentResponse.model_validate(record)
 
 

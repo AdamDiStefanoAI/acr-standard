@@ -174,11 +174,45 @@ class ApprovalRequestRecord(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     execution_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    authorization_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    request_payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_context: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
 
     agent_ref: Mapped[AgentRecord] = relationship(back_populates="approval_requests")
+
+
+class ExecutionReceiptRecord(Base):
+    """Durable dispatch fence and outcome evidence, retained independently of agents.
+
+    One approval can cause at most one gateway dispatch attempt. An unfinished
+    receipt is NOT evidence that the downstream action did not execute.
+    """
+
+    __tablename__ = "execution_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('executing', 'succeeded', 'unknown', 'blocked')",
+            name="ck_execution_receipts_state",
+        ),
+    )
+
+    attempt_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: f"exe-{uuid.uuid4()}"
+    )
+    # No cascading foreign key: deleting an identity must not erase evidence.
+    approval_request_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    authorization_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="executing")
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 # ── Drift baselines ───────────────────────────────────────────────────────────

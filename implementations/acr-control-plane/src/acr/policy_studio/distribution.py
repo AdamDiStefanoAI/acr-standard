@@ -8,10 +8,13 @@ from dataclasses import dataclass
 from acr.db.models import PolicyReleaseRecord
 from acr.policy_studio.core_bundle import (
     assemble_bundle,
+    canonical_json,
+    core_identity,
     core_sources,
     extension_files,
     managed_core_files,
     opa_config,
+    operator_identity,
 )
 from acr.policy_studio.isolation import isolate_studio_policy
 
@@ -45,6 +48,38 @@ def _add_payload(payloads: dict[str, bytes], name: str, payload: bytes) -> None:
     if name in payloads:
         raise ValueError(f"Runtime bundle payload collision at {name}")
     payloads[name] = payload
+
+
+def studio_release_identity(active_releases: list[PolicyReleaseRecord]) -> str:
+    """Content/version identity, independent of compiler and activation timestamps."""
+    if len({record.agent_id for record in active_releases}) != len(active_releases):
+        raise ValueError("Multiple active releases for the same agent")
+    releases = [
+        {
+            "agent_id": record.agent_id,
+            "release_id": record.release_id,
+            "version": record.version,
+            "rego_sha256": hashlib.sha256(record.rego_policy.encode()).hexdigest(),
+        }
+        for record in sorted(active_releases, key=lambda item: (item.agent_id, item.release_id))
+    ]
+    return hashlib.sha256(canonical_json(releases)).hexdigest()
+
+
+async def expected_policy_identity(db) -> dict:
+    """Current configured identity; compare against the exact OPA evaluation result.
+
+    This detects an active-release change before OPA's next bundle poll. It is
+    not remote attestation and does not make activation across replicas atomic.
+    """
+    from acr.config import settings
+    from acr.policy_studio.releases import list_active_policy_releases
+
+    return {
+        "core": core_identity(),
+        "operator": operator_identity(settings.policy_extension_dir or None),
+        "studio": studio_release_identity(await list_active_policy_releases(db)),
+    }
 
 
 def build_active_runtime_bundle(
@@ -87,7 +122,9 @@ def build_active_runtime_bundle(
         module_path, bridge_path = _agent_bundle_paths(record.agent_id)
         _add_payload(payloads, module_path, isolated.encode())
         _add_payload(payloads, bridge_path, bridge.encode())
-    bytes_data, _ = assemble_bundle(payloads)
+    bytes_data, _ = assemble_bundle(
+        payloads, studio_identity=studio_release_identity(active_releases)
+    )
     return RuntimeBundleArtifact(
         filename="acr-active-runtime.tar.gz",
         content_type="application/gzip",

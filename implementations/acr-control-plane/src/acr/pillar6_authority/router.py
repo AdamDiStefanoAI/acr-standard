@@ -105,3 +105,49 @@ async def override(
     await db.commit()
     await db.refresh(record)
     return _to_response(record)
+
+
+@router.post("/{request_id}/execute", response_model=ApprovalResponse)
+async def resume_execution(
+    request_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: OperatorPrincipal = Depends(require_operator_roles("approver", "security_admin")),
+) -> ApprovalResponse:
+    """Resume a recorded approval or retrieve its successful durable outcome."""
+    from fastapi import HTTPException
+
+    if not settings.execute_allowed_actions:
+        raise HTTPException(status_code=409, detail="Downstream execution is disabled")
+    record = await ap.get_approval_request(db, request_id)
+    await ap.execute_approval(db, record)
+    await db.refresh(record)
+    return _to_response(record)
+
+
+@router.get("/{request_id}/receipt")
+async def get_receipt(
+    request_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: OperatorPrincipal = Depends(
+        require_operator_roles("approver", "auditor", "security_admin")
+    ),
+) -> dict:
+    """Return durable dispatch evidence; executing/unknown requires reconciliation."""
+    from fastapi import HTTPException
+
+    from acr.pillar6_authority.receipts import get_execution_receipt
+
+    receipt = await get_execution_receipt(db, request_id)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="No execution receipt")
+    return {
+        "attempt_id": receipt.attempt_id,
+        "approval_request_id": receipt.approval_request_id,
+        "payload_hash": receipt.payload_hash,
+        "authorization_snapshot": receipt.authorization_snapshot,
+        "state": receipt.state,
+        "result": receipt.result,
+        "error": receipt.error,
+        "created_at": receipt.created_at,
+        "completed_at": receipt.completed_at,
+    }

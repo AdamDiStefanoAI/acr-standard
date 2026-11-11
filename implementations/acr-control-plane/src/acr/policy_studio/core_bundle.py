@@ -21,7 +21,7 @@ from acr.policy_studio.compiler import file_rego_version, validate_bundle
 
 CORE_FILES = ("common.rego", "content_safety.rego")
 CONTRACT_VERSION = 3
-_RESERVED = re.compile(r"\b(?:core_identity|__acr_core_files|operator_identity)\b")
+_RESERVED = re.compile(r"\b(?:core_identity|__acr_core_files|operator_identity|studio_identity)\b")
 
 
 def canonical_json(value: object) -> bytes:
@@ -166,11 +166,16 @@ def extension_identity(payloads: dict[str, bytes]) -> str:
     return hashlib.sha256(canonical_json(digests)).hexdigest()
 
 
-def assemble_bundle(payloads: dict[str, bytes]) -> tuple[bytes, dict]:
+def assemble_bundle(
+    payloads: dict[str, bytes], *, studio_identity: str | None = None
+) -> tuple[bytes, dict]:
     identity = core_identity()
     operator = extension_identity(payloads)
+    # Empty Studio set is also explicit, so legacy bundles cannot authorize resume.
+    studio = studio_identity or hashlib.sha256(canonical_json([])).hexdigest()
     payloads = {
         **payloads,
+        "bundle/studio_identity.rego": f'package acr\nstudio_identity := "{studio}"\n'.encode(),
         "bundle/operator_identity.rego": f'package acr\noperator_identity := "{operator}"\n'.encode(),
     }
     hashes = {name: hashlib.sha256(body).hexdigest() for name, body in sorted(payloads.items())}

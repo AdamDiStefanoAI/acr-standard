@@ -229,7 +229,10 @@ def run():
     denied = decision("deny", "deny", tool="delete_customer")
     denied_ledger = ledger()
     capture_evidence(
-        denied["correlation_id"], "deny", "delete_customer", {"customer_id": "C-12345"},
+        denied["correlation_id"],
+        "deny",
+        "delete_customer",
+        {"customer_id": "C-12345"},
         prefix="deny-",
     )
     assert ledger() == denied_ledger, "Evidence retrieval must not execute a denied tool"
@@ -255,11 +258,19 @@ def run():
         if resolution == "approve":
             assert ledger()[-1] == {"tool_name": "issue_refund", "parameters": refund}
             before = len(ledger())
+            successful_result = body["execution_result"]
             status, body, _, _ = request(
                 "POST", path + "/approve", {"reason": "Repeat attempt"}, OPERATOR
             )
             assert status == 409
             observe("approval-replay", status, body, before, 0)
+            status, receipt, _, _ = request("GET", path + "/receipt", headers=OPERATOR)
+            assert status == 200 and receipt["state"] == "succeeded", (status, receipt)
+            assert receipt["authorization_snapshot"]["approved_payload"]["parameters"] == refund
+            status, resumed, _, _ = request("POST", path + "/execute", {}, OPERATOR)
+            assert status == 200 and resumed["execution_result"] == successful_result
+            observe("approval-resume-cached", status, resumed, before, 0)
+            (OUT / "approval-execution-receipt.json").write_text(json.dumps(receipt, indent=2))
     before = len(ledger())
     status, body, _, _ = request(
         "POST", "/execute", {"tool_name": "query_customer_db", "parameters": {}}, base=EXECUTOR
@@ -369,9 +380,7 @@ def run():
     else:
         raise AssertionError("containment restore did not recover")
     decision("restored", "allow")
-    capture_evidence(
-        correlations[-1], "allow", "query_customer_db", {"customer_id": "C-12345"}
-    )
+    capture_evidence(correlations[-1], "allow", "query_customer_db", {"customer_id": "C-12345"})
     (OUT / "ledger.json").write_text(json.dumps(ledger(), indent=2))
     print("PASS: real full-stack checks; enterprise side effects are synthetic fixture only")
 

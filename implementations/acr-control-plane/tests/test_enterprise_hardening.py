@@ -238,9 +238,21 @@ class TestSpendControls:
             approval_queue="finance",
             sla_minutes=60,
         )
+        record.status = "approved"
+        record.decided_by = "fixture-operator"
         await db.commit()
 
+        # This unit test isolates spend charging; resumption checks are covered
+        # end-to-end with safe fixtures in test_safe_approval_resume.py.
         with (
+            patch(
+                "acr.pillar6_authority.resumption.revalidate",
+                new_callable=AsyncMock,
+                return_value=({}, 0.25),
+            ),
+            patch(
+                "acr.pillar6_authority.resumption.check_dispatch_boundary", new_callable=AsyncMock
+            ),
             patch(
                 "acr.pillar6_authority.approval.adjust_authoritative_spend", new_callable=AsyncMock
             ) as adjust_spend,

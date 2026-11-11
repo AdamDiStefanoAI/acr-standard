@@ -56,25 +56,31 @@ inside a private Studio module; keep shared constraints in operator policies.
 
 ## Approval processing boundary and cutover prerequisite
 
-The preexisting approved-action path, `execute_approval` in
-`src/acr/pillar6_authority/approval.py`, calls the executor without a fresh OPA
-policy evaluation. New core/local-extension identity checks therefore do not
-revalidate pending approvals, previously approved actions, or their execution
-under a later release. Gateway readiness is not a replacement for controlling
-approval processing, especially for direct requests outside readiness-based routing.
+Approval execution now revalidates the agent, containment, expiry, exact request
+and current OPA policy before dispatch, then checks the authorization again after
+a durable execution claim. It binds the evaluated core, local extension and
+active Studio release identities. An evaluator that has not yet loaded the
+currently active Studio set cannot resume an approval. This is per-request
+checking, not an atomic fleet-wide cutover or downstream revocation fence.
 
-Before any upgrade, rollback, or policy cutover, pause approval processing and
-stop new evaluations that could create pending approvals. Inventory outstanding
-approvals and resolve them under the existing reviewed policy, or deliberately
-deny them and require a new evaluation after cutover. Drain any in-flight approved
-executions before replacing the release. Keep approval processing paused until
-new evaluations and the intended policy behavior have been verified. The upgrade
-script does not automate this approval inventory or resolution.
+Apply database migration 0014 before using this gateway. Existing approvals lack
+an authorization snapshot and must be denied and resubmitted through evaluation;
+they are deliberately not backfilled from current policy. OPA must load a newly
+generated bundle containing `studio_identity` before new resumable approvals can
+be issued. Older bundles can still serve ordinary evaluations but produce
+unbound approvals that cannot execute. Do not downgrade the receipt table away
+while any execution evidence or unresolved outcome is needed.
 
-This change does not alter the approved-action/replay lifecycle. Its behavior
-across release upgrades or rollback is a preexisting, unvalidated limitation of
-this upgrade workflow, even though ordinary approval/replay tests exist. Do not
-claim that a matching core identity reauthorizes stored approvals.
+Before upgrade, rollback or policy cutover, pause approval processing and stop
+new evaluations that create pending approvals. Inventory and deny/resubmit
+outstanding approvals as needed, and drain in-flight executions before replacing
+the release. Keep processing paused until new evaluations and intended policy
+behavior are verified. The upgrade script does not automate that inventory.
+
+A durable `executing` or `unknown` receipt means an action may have occurred.
+Do not delete its receipt or submit a replacement action until its downstream
+outcome is reconciled. See [safe approval resumption](safe-approval-resumption.md)
+for state meanings, recovery limits and the test contract.
 
 ## One-time migration from 1.2.1
 
@@ -127,9 +133,10 @@ check, not a database lock. The script then deliberately stops the gateway,
 exports the new pinned OPA config, runs schema migrations, and restarts both
 services. It never deletes operator files or database/Redis volumes. Do not run
 `down -v` on a real deployment. A failed update leaves the gateway stopped or
-unready, and new evaluations reject stale core. Stored approval execution is
-outside this identity check. Investigate logs and retry the
-same image or restore the previous reviewed image.
+unready, and new evaluations reject stale core. Approval resumption also rejects
+stale/missing evaluated policy identity and changed authorization. Investigate
+logs and retry the same image or restore the previous reviewed image, preserving
+execution receipts and reconciling uncertain outcomes before any replacement action.
 
 Rollback of application/policy artifacts does not reverse database migrations.
 Check schema backward compatibility before rollback; restore the tested backup if
