@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from datetime import timedelta
 from typing import Any
@@ -165,6 +166,17 @@ async def evaluate_policy(
     if result.get("operator_identity") != expected_operator:
         raise PolicyEngineError("Missing or stale operator policy bundle")
 
+    # Approval resumption requires all identities from this evaluation. Legacy
+    # bundles remain usable for ordinary evaluation but cannot resume approvals.
+    studio = result.get("studio_identity")
+    policy_identity = None
+    if isinstance(studio, str) and re.fullmatch(r"[0-9a-f]{64}", studio):
+        policy_identity = {
+            "core": result["core_identity"],
+            "operator": result["operator_identity"],
+            "studio": studio,
+        }
+
     deny_reasons: list[str] = result.get("deny", [])
     allow: bool = result.get("allow", False)
     modify: bool = result.get("modify", False)
@@ -255,6 +267,7 @@ async def evaluate_policy(
     )
 
     return PolicyEvaluationResult(
+        policy_identity=policy_identity,
         final_decision=final,  # type: ignore[arg-type]
         decisions=decisions,
         reason=reason,

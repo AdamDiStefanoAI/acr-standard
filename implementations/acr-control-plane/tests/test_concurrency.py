@@ -11,6 +11,7 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -155,6 +156,20 @@ class TestKillSwitchDuringEvaluate:
 class TestApprovalTimeoutRace:
     """Expiry loop running while operator manually approves should not
     leave the record in an inconsistent state."""
+
+    @pytest_asyncio.fixture
+    async def test_engine(self, tmp_path):
+        # Concurrent transactions need separate connections. StaticPool shares
+        # one transaction, letting a rejected request roll back the expiry worker.
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from acr.db.database import Base
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'timeout.sqlite'}")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        yield engine
+        await engine.dispose()
 
     async def test_approval_timeout_does_not_race_with_manual_approve(
         self,

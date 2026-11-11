@@ -29,6 +29,7 @@ class OPAResponse(BaseModel):
 class PolicyEvaluationResult(BaseModel):
     """Aggregated result from OPA evaluation."""
 
+    policy_identity: dict | None = None
     final_decision: Literal["allow", "deny", "modify", "escalate"]
     decisions: list[PolicyDecision]
     reason: str | None = None

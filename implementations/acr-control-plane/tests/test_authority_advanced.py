@@ -70,6 +70,9 @@ async def _make_approval(
         expires_at=expires_at,
         status=status,
     )
+    from acr.pillar6_authority.resumption import request_digest
+
+    record.request_payload_hash = request_digest(record)
     db.add(record)
     await db.commit()
     await db.refresh(record)

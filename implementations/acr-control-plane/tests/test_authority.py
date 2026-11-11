@@ -130,7 +130,7 @@ class TestApprovalRouterHTTP:
         assert resp.json()["status"] == "approved"
         assert resp.json()["decided_by"] == "test-operator"
 
-    async def test_approve_via_http_executes_when_enabled(
+    async def test_unbound_approval_cannot_execute_when_enabled(
         self, async_client: AsyncClient, db: AsyncSession, sample_agent
     ) -> None:
         request_id = await self._seed_approval(db, sample_agent)
@@ -150,8 +150,8 @@ class TestApprovalRouterHTTP:
                 f"/acr/approvals/{request_id}/approve",
                 json={"decided_by": "ops@example.com", "reason": "Approved"},
             )
-        assert resp.status_code == 200
-        assert resp.json()["execution_result"]["executor"] == "finance-api"
+        assert resp.status_code == 409
+        assert "unbound" in resp.text.lower()
 
     async def test_deny_via_http(
         self, async_client: AsyncClient, db: AsyncSession, sample_agent

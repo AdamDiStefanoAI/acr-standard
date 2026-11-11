@@ -18,8 +18,8 @@ from acr.common.time import utcnow
 from acr.config import settings
 from acr.db.models import ApprovalRequestRecord
 from acr.gateway.executor import execute_action
-from acr.gateway.spend_control import adjust_authoritative_spend, resolve_action_cost_usd
-from acr.pillar1_identity.registry import get_manifest
+from acr.gateway.spend_control import adjust_authoritative_spend
+from acr.pillar6_authority import receipts, resumption
 
 logger = structlog.get_logger(__name__)
 
@@ -48,6 +48,8 @@ async def create_approval_request(
     description: str | None,
     approval_queue: str,
     sla_minutes: int,
+    authorization_snapshot: dict | None = None,
+    request_context: dict | None = None,
 ) -> ApprovalRequestRecord:
     """Insert a new approval request and optionally fire a webhook."""
     request_id = f"apr-{uuid.uuid4()}"
@@ -64,7 +66,10 @@ async def create_approval_request(
         sla_minutes=sla_minutes,
         expires_at=expires_at,
         status="pending",
+        authorization_snapshot=authorization_snapshot,
+        request_context=request_context or {},
     )
+    record.request_payload_hash = resumption.request_digest(record)
     db.add(record)
     await db.flush()
     await db.refresh(record)
@@ -141,6 +146,7 @@ async def approve(
         raise ApprovalConflictError(
             f"Approval request {request_id} is already in status '{record.status}'"
         )
+    resumption.check_request(record)
     record.status = "approved"
     record.decision = "approved"
     record.decided_by = decided_by
@@ -192,6 +198,7 @@ async def override(
         raise ApprovalConflictError(
             f"Approval request {request_id} is already in status '{record.status}'"
         )
+    resumption.check_request(record)
     record.status = "overridden"
     record.decision = "overridden"
     record.decided_by = decided_by
@@ -208,25 +215,57 @@ async def override(
 
 
 async def execute_approval(db: AsyncSession, record: ApprovalRequestRecord) -> dict:
-    """Execute an approved/overridden action when downstream execution is enabled."""
-    manifest = await get_manifest(db, record.agent_id)
-    estimated_cost_usd = resolve_action_cost_usd(manifest, record.tool_name)
-
-    await adjust_authoritative_spend(record.agent_id, estimated_cost_usd)
-    try:
-        result = await execute_action(
-            agent_id=record.agent_id,
-            tool_name=record.tool_name,
-            parameters=record.parameters or {},
-            description=record.description,
-            correlation_id=record.correlation_id,
-            approval_request_id=record.request_id,
+    """Claim once durably before dispatch; unknown outcomes never auto-retry."""
+    if record.status not in {"approved", "overridden"} or not record.decided_by:
+        raise ApprovalConflictError("Execution requires a recorded human approval")
+    existing = await receipts.get_execution_receipt(db, record.request_id)
+    if existing is not None:
+        if existing.payload_hash != resumption.digest(resumption.action_payload(record)):
+            raise ApprovalConflictError("Receipt payload differs from requested action")
+        if existing.state == "succeeded":
+            return existing.result or {}
+        raise ApprovalConflictError(
+            "Execution may have occurred; reconciliation required, no retry"
         )
+
+    snapshot, estimated_cost_usd = await resumption.revalidate(db, record)
+    # Freeze payload before yielding to any storage/network operation.
+    payload = json.loads(json.dumps(resumption.action_payload(record), allow_nan=False))
+    receipt = await receipts.claim_execution(
+        db,
+        approval_request_id=record.request_id,
+        payload_hash=resumption.digest(payload),
+        authorization_snapshot=snapshot,
+    )
+    # claim_execution commits both approval and receipt BEFORE any external action.
+    # No successful commit means no dispatch. A lost commit acknowledgement leaves
+    # a possibly committed claim which must be reconciled, never blindly retried.
+    try:
+        await adjust_authoritative_spend(record.agent_id, estimated_cost_usd)
+        await resumption.check_dispatch_boundary(db, record, snapshot)
     except Exception:
-        await adjust_authoritative_spend(record.agent_id, -estimated_cost_usd)
+        await receipts.finish_execution(
+            db,
+            receipt,
+            state="blocked",
+            error="Final authorization/dependency check failed; no dispatch",
+        )
+        raise
+    try:
+        result = await execute_action(**payload)
+    except Exception:
+        # Conservatively retain estimated spend: failure can mean a lost response
+        # after the downstream side effect. Do not store exception text/secrets.
+        await receipts.finish_execution(
+            db,
+            receipt,
+            state="unknown",
+            error="Dispatch failed or outcome uncertain; reconcile externally",
+        )
         raise
 
     record.execution_result = result
+    await receipts.finish_execution(db, receipt, state="succeeded", result=result)
     logger.info(
         "approval_executed",
         request_id=record.request_id,

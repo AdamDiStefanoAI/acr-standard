@@ -57,6 +57,7 @@ from acr.pillar4_observability.schema import LatencyBreakdown, PolicyResult
 from acr.pillar4_observability.telemetry import build_event, log_event, persist_event
 from acr.pillar5_containment.graduated import _ISOLATE_PREFIX, _RESTRICT_PREFIX, _THROTTLE_PREFIX
 from acr.pillar5_containment.killswitch import is_agent_killed
+from acr.pillar6_authority import resumption
 from acr.pillar6_authority.approval import create_approval_request
 
 logger = structlog.get_logger(__name__)
@@ -425,6 +426,14 @@ async def evaluate(
 
         # ── [6] Escalate → approval queue ─────────────────────────────────────
         if response_decision == "escalate":
+            authorization_snapshot = None
+            if policy_result.policy_identity is not None:
+                expected = await resumption.expected_policy_identity(db)
+                if expected != policy_result.policy_identity:
+                    raise PolicyEngineError("Evaluator has not loaded the active approval policy")
+                authorization_snapshot = resumption.authorization_snapshot(
+                    manifest, expected, await resumption.containment(req.agent_id)
+                )
             approval = await create_approval_request(
                 db,
                 correlation_id=correlation_id,
@@ -432,6 +441,8 @@ async def evaluate(
                 tool_name=effective_action["tool_name"],
                 parameters=effective_action["parameters"],
                 description=effective_action.get("description"),
+                authorization_snapshot=authorization_snapshot,
+                request_context=req.context,
                 approval_queue=policy_result.approval_queue or "default",
                 sla_minutes=policy_result.sla_minutes or 240,
             )
