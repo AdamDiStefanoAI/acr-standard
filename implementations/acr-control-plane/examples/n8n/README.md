@@ -6,11 +6,11 @@ This local example accepts a webhook, asks `/acr/evaluate` to govern a fixed
 payment, email, or ticket-system credentials and never executes a tool itself.
 Webhook callers cannot choose the agent identity, tool, or gateway URL.
 
-**Validation status:** the export and boundary assertions are checked by repository
-tests. Actual n8n import/execution and the combined Docker stack have **not** been
-validated in the implementation environment, which has no Docker executable.
-Issue #18 remains open until the live checklist below passes on a disposable host.
-Do not treat this as a tested production integration.
+**Validation status:** repository checks cover the export boundary; hosted Docker
+validation exercised actual n8n import, authenticated ALLOW, policy DENY, and
+missing webhook credentials (evidence below). Wrong agent-JWT and disabled-gateway
+execution checks in the broader manual checklist remain unexercised. This is a
+bounded synthetic integration, not a tested production integration.
 
 ## 1. Start a disposable local stack
 
@@ -108,8 +108,14 @@ pytest tests/test_n8n_example.py -q
 
 These tests inspect the exported JSON/configuration, not the n8n runtime. They
 cannot establish successful import, node-version compatibility, or live policy
-and executor behavior. No live success output is included because none was
-observed during implementation.
+and executor behavior.
+
+Hosted runtime validation on 2026-11-13 at commit `f72a1d1c063e77aa0e88966e67fc8d6fdd422d9c`
+passed using n8n 2.47.5 and disposable real gateway/OPA/executor services:
+[run 43373533057](https://github.com/AdamDiStefanoAI/acr-standard/actions/runs/43373533057).
+ALLOW increased the synthetic execution ledger from 0 to 1; DENY and a missing
+webhook key each left it at 1. This is a bounded demo integration result, not
+production readiness or coverage of MODIFY/approval resumption.
 
 ## Hosted validation route
 
