@@ -1,0 +1,28 @@
+# Merge with the main Compose file; paths are relative to that first file.
+services:
+  acr-gateway:
+    environment:
+      EXECUTE_ALLOWED_ACTIONS: 'true'
+      EXECUTOR_HMAC_SECRET: ${EXECUTOR_HMAC_SECRET:?Set a random executor authorization secret}
+      EXECUTOR_CREDENTIAL_SECRET: ${EXECUTOR_CREDENTIAL_SECRET:?Set a distinct random credential secret}
+      TOOL_EXECUTOR_MAP_JSON: '{"create_ticket":"http://n8n-demo-executor:8010/execute"}'
+  n8n-demo-executor:
+    build:
+      context: .
+      dockerfile: examples/protected_executor/Dockerfile
+    environment:
+      EXECUTOR_HMAC_SECRET: ${EXECUTOR_HMAC_SECRET:?Required}
+      EXECUTOR_CREDENTIAL_SECRET: ${EXECUTOR_CREDENTIAL_SECRET:?Required}
+      PROTECTED_EXECUTOR_ALLOWED_TOOLS: create_ticket
+  n8n:
+    # Require the operator to choose an explicitly reviewed n8n image version.
+    image: ${N8N_IMAGE:?Set an explicit n8nio/n8n image tag or digest}
+    ports:
+      - '127.0.0.1:5678:5678'
+    environment:
+      N8N_DIAGNOSTICS_ENABLED: 'false'
+      N8N_VERSION_NOTIFICATIONS_ENABLED: 'false'
+    volumes:
+      - n8n_demo_data:/home/node/.n8n
+volumes:
+  n8n_demo_data:

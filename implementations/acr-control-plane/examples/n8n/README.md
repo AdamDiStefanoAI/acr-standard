@@ -1,95 +1,121 @@
-# n8n Integration Example
+# n8n webhook → ACR → synthetic executor
 
-This example shows how to use `n8n` as the workflow layer while keeping the ACR control plane as the enforcement layer for sensitive actions.
+This local example accepts a webhook, asks `/acr/evaluate` to govern a fixed
+`create_ticket` action, and returns the decision. Only the gateway calls the
+[protected demo executor](../protected_executor/README.md). The workflow has no
+payment, email, or ticket-system credentials and never executes a tool itself.
+Webhook callers cannot choose the agent identity, tool, or gateway URL.
 
-## The Core Idea
+**Validation status:** the export and boundary assertions are checked by repository
+tests. Actual n8n import/execution and the combined Docker stack have **not** been
+validated in the implementation environment, which has no Docker executable.
+Issue #18 remains open until the live checklist below passes on a disposable host.
+Do not treat this as a tested production integration.
 
-`n8n` should decide *what it wants to do next*.
+## 1. Start a disposable local stack
 
-ACR should decide *whether that action is allowed to happen at all*.
+From `implementations/acr-control-plane/`, follow the [main quickstart](../../README.md#quick-start)
+through `.env` creation and operator/service key configuration. Do not reuse
+production keys or data. Then, in that same shell:
 
-For sensitive steps, do not wire `n8n` directly to internal ticketing, refund, email, or infrastructure systems. Wire it to `POST /acr/evaluate` instead.
-
-## Reference Flow
-
-```text
-n8n Trigger / Workflow
-  -> Build action payload
-  -> HTTP Request: POST /acr/evaluate
-  -> Switch on decision
-     -> allow: continue with gateway-managed execution result
-     -> deny: stop and surface the reason
-     -> escalate: notify operators / wait for approval
+```bash
+export EXECUTOR_HMAC_SECRET="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+export EXECUTOR_CREDENTIAL_SECRET="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+# Set a specific n8nio/n8n version or digest reviewed for your host, not latest.
+export N8N_IMAGE='n8nio/n8n:<your-reviewed-version>'
+docker compose -f docker-compose.yml -f examples/n8n/compose.yaml up --build -d
+curl --fail http://localhost:8000/acr/health
 ```
 
-## Files In This Example
+The override supplies matching secrets and service-DNS routing to the gateway
+and executor. The executor has no published host port. n8n is exposed only on
+loopback port 5678. The base development Compose stack still exposes its other
+ports; run on an isolated host. n8n stores its local account and credentials in
+`n8n_demo_data`; preserve its encryption key/volume if keeping this environment.
 
-- [workflow JSON](acr_sensitive_action_workflow.json)
-- [protected executor example](../protected_executor/README.md)
+## 2. Register the demo agent and issue its JWT
 
-The workflow JSON is meant as a starting point, not a complete production export.
+In the gateway operator console (`http://localhost:8000/console`), authenticate
+with the local operator key. Register an **active** agent with:
 
-## Assumptions
+- ID: `n8n-support-demo`
+- Owner: `demo@example.invalid`
+- Purpose: `Synthetic customer-support ticket demo`
+- Allowed tools: `create_ticket`
+- Forbidden tools: `delete_customer`
 
-This example assumes:
+Issue an agent token using the console, or the operator-authenticated
+`POST /acr/agents/n8n-support-demo/token` endpoint. Keep the returned token private;
+it expires and must be refreshed/reissued for later demonstrations. Give n8n only
+this agent JWT, **not** the operator key or executor secrets.
 
-- ACR runs at `http://localhost:8000`
-- the protected executor runs at `http://127.0.0.1:8010`
-- you have already registered an agent and issued a JWT
-- the gateway is configured with `EXECUTE_ALLOWED_ACTIONS=true`
+## 3. Import and configure n8n
 
-## Example Action Payload
+Open `http://localhost:5678`, complete n8n's local account setup, and import
+[acr_sensitive_action_workflow.json](acr_sensitive_action_workflow.json).
+The workflow is deliberately inactive on import. Configure two **different**
+Header Auth credentials in n8n:
 
-The HTTP Request node should send something like:
+1. **Agent Webhook:** a random `X-Demo-Key` header, shared only with your local
+   test caller. This protects the incoming webhook.
+2. **ACR Evaluate:** header name `Authorization`, value `Bearer <agent JWT>`.
 
-```json
-{
-  "agent_id": "customer-support-01",
-  "action": {
-    "tool_name": "create_ticket",
-    "parameters": {
-      "title": "Customer issue follow-up",
-      "body": "Customer requested a call back",
-      "priority": "normal"
-    },
-    "description": "Create support ticket from workflow"
-  },
-  "context": {
-    "session_id": "n8n-run-123",
-    "hourly_spend_usd": 0.25
-  }
-}
+The gateway URL is `http://acr-gateway:8000/acr/evaluate`, using Compose service
+DNS. `localhost` inside n8n would point to n8n, not the gateway. “Never Error” is enabled only to return gateway DENY (HTTP 403) and
+authentication-error bodies to the caller; no downstream execution node exists.
+A transport failure still stops the workflow. Never treat a returned body as authorization. Select **Listen for
+test event** in the Webhook node, then in another terminal:
+
+```bash
+read -rsp 'Webhook demo key: ' DEMO_KEY; echo
+curl --fail-with-body http://localhost:5678/webhook-test/acr-sensitive-action \
+  -H "X-Demo-Key: $DEMO_KEY" -H 'Content-Type: application/json' \
+  -d '{"subject":"Synthetic customer follow-up"}'
+unset DEMO_KEY
 ```
 
-And it should include:
+Test webhooks must be armed again for each call. Activate the workflow only if
+you need repeated local testing, then use `/webhook/acr-sensitive-action`.
+Do not expose it publicly for this demonstration.
 
-```text
-Authorization: Bearer <agent JWT>
-Content-Type: application/json
+## 4. Live acceptance checklist (record results before closing #18)
+
+- Import succeeds on the chosen n8n version; record that exact version.
+- An ordinary synthetic request returns `decision=allow` and a nonempty
+  `execution_result` from the fake executor. An allow response alone does not
+  prove execution: inspect its result and gateway/executor logs.
+- Re-arm the test webhook and send `{"subject":"rm -rf /"}` as inert JSON text.
+  Under the stock core content-safety policy expect `deny`, with no executor call. Inspect
+  logs for the exact run; do not infer absence of execution from HTTP success.
+- Missing/wrong webhook key is rejected without calling ACR.
+- An expired/wrong agent JWT returns an authentication-error body without calling the executor.
+- Confirm the export contains no direct executor node. Disable gateway execution
+  and verify that policy permission alone does not produce a fake ticket.
+
+This fixed-ticket example does not demonstrate MODIFY or approval resumption.
+The raw gateway response preserves `deny`, `escalate`, reasons, and approval IDs;
+returning a response never grants execution authority. A webhook HTTP 200 means
+transport succeeded, **not** that ACR allowed the action. Do not attach a direct
+sensitive-action node after the response, retry executions blindly, or treat
+`escalate` as permission. See the protected-executor limitations concerning
+replay, audience, scopes, and authorization binding before any real deployment.
+
+## Static regression check
+
+```bash
+pytest tests/test_n8n_example.py -q
 ```
 
-## How To Handle The Response In n8n
+These tests inspect the exported JSON/configuration, not the n8n runtime. They
+cannot establish successful import, node-version compatibility, or live policy
+and executor behavior. No live success output is included because none was
+observed during implementation.
 
-When the ACR response comes back:
+## Hosted validation route
 
-- `decision=allow`
-  Use the returned `execution_result` if gateway-managed execution is enabled.
-- `decision=deny`
-  Stop the workflow and store the reason in workflow logs or a task comment.
-- `decision=escalate`
-  Notify an operator and persist the `approval_request_id`.
-
-## Why This Pattern Matters
-
-If `n8n` talks directly to internal systems, ACR is only advisory.
-
-If `n8n` must go through ACR and the downstream executor rejects non-ACR traffic, ACR becomes the real control boundary.
-
-That is the recommended production posture.
-
-## Production Notes
-
-- Keep the protected executor on an internal network.
-- Do not expose direct credentials for protected systems to the workflow builder.
-- Prefer short-lived brokered credentials minted by the gateway.
-- Treat `n8n` as the orchestration UX, not the final enforcement point.
+The dedicated `ACR n8n webhook validation` workflow uses official image
+`n8nio/n8n:2.47.5`, imports this same export with disposable credentials, and
+sends real authenticated webhooks through the real gateway and OPA to a ledger
+wrapper around the real synthetic ticket function. It asserts one ALLOW effect,
+zero DENY effects, and webhook authentication rejection. Results are CI evidence,
+not a production-readiness claim; the live job must pass before issue #18 closes.

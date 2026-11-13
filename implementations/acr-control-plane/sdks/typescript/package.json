@@ -18,9 +18,13 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run build && node --test tests/*.test.mjs"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
   }
 }

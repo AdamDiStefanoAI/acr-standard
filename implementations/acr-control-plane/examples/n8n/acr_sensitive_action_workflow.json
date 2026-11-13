@@ -1,209 +1,68 @@
 {
   "name": "ACR Sensitive Action Gate",
-  "description": "Reference n8n flow showing how a sensitive action is sent through ACR before execution.",
   "nodes": [
     {
-      "id": "manual-trigger",
-      "name": "Manual Trigger",
-      "type": "n8n-nodes-base.manualTrigger",
+      "id": "webhook",
+      "name": "Agent Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
       "position": [
         240,
         260
-      ]
-    },
-    {
-      "id": "set-payload",
-      "name": "Build Action Payload",
-      "type": "n8n-nodes-base.set",
-      "position": [
-        500,
-        260
       ],
+      "webhookId": "acr-sensitive-action",
       "parameters": {
-        "keepOnlySet": true,
-        "values": {
-          "string": [
-            {
-              "name": "agent_id",
-              "value": "customer-support-01"
-            },
-            {
-              "name": "tool_name",
-              "value": "create_ticket"
-            },
-            {
-              "name": "description",
-              "value": "Create support ticket from n8n workflow"
-            }
-          ],
-          "json": [
-            {
-              "name": "parameters",
-              "value": {
-                "title": "Customer issue follow-up",
-                "body": "Customer requested a call back",
-                "priority": "normal"
-              }
-            },
-            {
-              "name": "context",
-              "value": {
-                "session_id": "n8n-run-demo",
-                "hourly_spend_usd": 0.25
-              }
-            }
-          ]
-        }
+        "httpMethod": "POST",
+        "path": "acr-sensitive-action",
+        "responseMode": "responseNode",
+        "authentication": "headerAuth",
+        "options": {}
       }
     },
     {
-      "id": "evaluate-action",
+      "id": "evaluate",
       "name": "ACR Evaluate",
       "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
-        780,
+        520,
         260
       ],
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:8000/acr/evaluate",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "Bearer {{$env.ACR_AGENT_TOKEN}}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
+        "url": "http://acr-gateway:8000/acr/evaluate",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\"agent_id\": $json.agent_id, \"action\": {\"tool_name\": $json.tool_name, \"parameters\": $json.parameters, \"description\": $json.description}, \"context\": $json.context}"
-      }
-    },
-    {
-      "id": "switch-decision",
-      "name": "Decision",
-      "type": "n8n-nodes-base.switch",
-      "position": [
-        1060,
-        260
-      ],
-      "parameters": {
-        "dataType": "string",
-        "value1": "={{$json.decision}}",
-        "rules": [
-          {
-            "operation": "equal",
-            "value2": "allow"
-          },
-          {
-            "operation": "equal",
-            "value2": "deny"
-          },
-          {
-            "operation": "equal",
-            "value2": "escalate"
+        "jsonBody": "={{ { agent_id: \"n8n-support-demo\", action: { tool_name: \"create_ticket\", parameters: { customer_id: \"C-N8N-SYNTHETIC\", subject: $json.body.subject, priority: \"normal\" }, description: \"Create synthetic support ticket from n8n webhook\" }, context: { session_id: \"n8n-\" + $execution.id } } }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
           }
-        ]
-      }
-    },
-    {
-      "id": "allow-result",
-      "name": "Allowed Result",
-      "type": "n8n-nodes-base.set",
-      "position": [
-        1330,
-        140
-      ],
-      "parameters": {
-        "keepOnlySet": true,
-        "values": {
-          "string": [
-            {
-              "name": "status",
-              "value": "allowed"
-            }
-          ],
-          "json": [
-            {
-              "name": "execution_result",
-              "value": "={{$json.execution_result || {}}}"
-            }
-          ]
         }
       }
     },
     {
-      "id": "deny-result",
-      "name": "Denied Result",
-      "type": "n8n-nodes-base.set",
+      "id": "respond",
+      "name": "Return ACR Decision",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
       "position": [
-        1330,
+        800,
         260
       ],
       "parameters": {
-        "keepOnlySet": true,
-        "values": {
-          "string": [
-            {
-              "name": "status",
-              "value": "denied"
-            },
-            {
-              "name": "reason",
-              "value": "={{$json.reason}}"
-            }
-          ]
-        }
-      }
-    },
-    {
-      "id": "escalate-result",
-      "name": "Escalated Result",
-      "type": "n8n-nodes-base.set",
-      "position": [
-        1330,
-        380
-      ],
-      "parameters": {
-        "keepOnlySet": true,
-        "values": {
-          "string": [
-            {
-              "name": "status",
-              "value": "escalated"
-            },
-            {
-              "name": "approval_request_id",
-              "value": "={{$json.approval_request_id}}"
-            },
-            {
-              "name": "queue",
-              "value": "={{$json.approval_queue}}"
-            }
-          ]
-        }
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
       }
     }
   ],
   "connections": {
-    "Manual Trigger": {
-      "main": [
-        [
-          {
-            "node": "Build Action Payload",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Build Action Payload": {
+    "Agent Webhook": {
       "main": [
         [
           {
@@ -218,37 +77,16 @@
       "main": [
         [
           {
-            "node": "Decision",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Decision": {
-      "main": [
-        [
-          {
-            "node": "Allowed Result",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Denied Result",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Escalated Result",
+            "node": "Return ACR Decision",
             "type": "main",
             "index": 0
           }
         ]
       ]
     }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
   }
 }
