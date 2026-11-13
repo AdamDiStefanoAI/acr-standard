@@ -481,3 +481,12 @@ The gateway image now includes its matching core OPA rules. Read [the migration 
 Before publishing, follow the [release packaging checklist](docs/release-checklist.md).
 CI and release validation check the full project license in both container images,
 the installed package, the wheel and the source distribution.
+
+## Installed version
+
+After installing the package, run `acr --version` to print the installed
+`acr-control-plane` distribution version. The command works offline and does not
+require gateway credentials. `acr --help` lists the available options.
+
+This is the first public CLI entry point. A gateway/operator-key `acr doctor`
+check is not implemented; service readiness remains a separate operational check.

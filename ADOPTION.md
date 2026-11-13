@@ -15,7 +15,7 @@ This document explains how to adopt the ACR Framework, how to claim alignment, h
 
 ## ACR Conformance Levels
 
-> Aligned to ACR Runtime Control Plane Standard v1.0.1, §23 (Conformance Requirements).
+> For current conformance requirements, use §23 of the [published v1.2.0 standard](https://runtimecontrol.io/downloads/ACR_Standard_v1.2.0.pdf). This guide is informative; a checklist is not a conformance assessment.
 > Conformance is cumulative: each level builds on the previous one. A system claiming
 > Level 3 must satisfy all requirements from all three levels. These summaries do not replace the normative PDF; see [source precedence and document versions](docs/README.md#normative-source-and-document-versions).
 
@@ -43,9 +43,9 @@ Implementation details can vary (see [Implementation Guide](docs/guides/acr-impl
 
 ## Listing Your Implementation
 
-We maintain a list of implementations (open source, commercial, and research) in the [README](README.md#implementations). To be listed:
+The [reference implementation directory](implementations/) currently contains this project's own demonstration implementation, not an independently verified adoption registry. To propose an external implementation listing:
 
-1. **Open a pull request** that adds your implementation to the appropriate section (Open Source, Commercial, or Research).
+1. **Open a pull request** proposing a clearly labeled external-implementation entry and stating whether it is open source, commercial, or research.
 2. **Include:**
    - Name and short description
    - Which ACR pillars you implement (and conformance level if applicable)
@@ -87,9 +87,9 @@ If we release an official logo (e.g. in `docs/images/` or a branding repo), you 
 
 ## Citation
 
-Identify what you are citing: the repository/framework, the normative PDF, or an evaluated software implementation. These have separate version identities. The examples below cite the framework repository; `1.0` is its legacy framework label, not the v1.0.1 normative PDF or a software conformance claim. For reproducible software references, include the exact evaluated commit and assessment date.
+Identify what you are citing: the repository/framework, the normative PDF, or an evaluated software implementation. These have separate version identities. The examples below cite the framework repository; `1.0` is its legacy framework label, not the normative PDF or a software conformance claim. For reproducible software references, include the exact evaluated commit and assessment date.
 
-For the normative document, cite: **ACR Runtime Control Plane Standard, Version 1.0.1, 2026-03-29, runtimecontrol.io**, with the specific PDF artifact used for assessment. Do not infer a normative PDF revision from a similarly named software tag.
+For the normative document, cite: **ACR Runtime Control Plane Standard, Version 1.2.0, 2026-11-07, runtimecontrol.io**, with the specific PDF artifact used for assessment. Do not infer a normative PDF revision from a similarly named software tag.
 
 For papers and reports citing the framework repository:
 

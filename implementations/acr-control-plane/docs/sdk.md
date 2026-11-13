@@ -54,6 +54,10 @@ result = session.evaluate_action(
 
 ## LangGraph Adapter
 
+For a credential-free compiled graph covering allow, deny, and escalation, see the
+[offline refund example](../examples/langgraph_refund/README.md). It uses synthetic
+HTTP decisions and fake in-memory refunds, not a payment service or live policy engine.
+
 The Python SDK also includes a real adapter layer for LangGraph/LangChain-style tools.
 
 **Optional dependency limitation (2026-10-25):** the `integrations` extra and the

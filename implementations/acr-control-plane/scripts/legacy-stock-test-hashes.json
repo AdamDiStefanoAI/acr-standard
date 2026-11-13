@@ -1,3 +1,4 @@
 {
-  "content_safety_test.rego": "085459dd3e14983f3f5736d3be057ff82b20f360d4cf457530cc575daf5a517b"
+  "content_safety_test.rego": "085459dd3e14983f3f5736d3be057ff82b20f360d4cf457530cc575daf5a517b",
+  "customer_support_test.rego": "21492691af783c060ce5086359219fde5f7d20d61ade59342a9d6f081af49460"
 }

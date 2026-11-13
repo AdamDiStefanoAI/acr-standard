@@ -60,6 +60,9 @@ dependencies = [
     "anyio>=4.7.0,<5.0.0",
 ]
 
+[project.scripts]
+acr = "acr.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=9.0.3,<10.0.0",

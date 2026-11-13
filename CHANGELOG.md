@@ -4,6 +4,19 @@ All notable changes to the ACR Standard documentation and repository are documen
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Installed `acr --version` CLI, offline LangGraph refund example, TypeScript decision-helper tests/example and Python parity inventory, customer-support Rego regression tests, and opt-in parameter PII policy example.
+- Curated external resources and authenticated n8n webhook onboarding with a synthetic protected executor. See the n8n README for the exact validation scope.
+- Safe approval resumption and durable execution receipts from PR #54 (already merged); these remain unreleased until a separate release is made.
+
+### Documentation
+
+- Distinguished normative PDF, repository specification, software release, and unreleased main. The current publisher PDF is v1.2.0 (2026-11-07); its §6 incorporation pin says repository v1.2.0, while the website says v1.3.1. That disputed pin remains unresolved and is not a conformance claim.
+- Corrected reference-implementation listing and security support/version guidance. Historical entries below retain the publication state recorded at that time.
+
 ## [1.3.1] - 2026-11-08
 
 ### Fixed

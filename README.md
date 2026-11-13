@@ -8,7 +8,7 @@
 **The control plane your autonomous AI agents need before you let them touch production.**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.2.0-00d4ff.svg?style=for-the-badge)](https://github.com/AdamDiStefanoAI/acr-standard/releases)
+[![Version](https://img.shields.io/badge/specification-1.2.0-00d4ff.svg?style=for-the-badge)](docs/README.md#normative-source-and-document-versions)
 [![Status](https://img.shields.io/badge/status-reference%20implementation-blue.svg?style=for-the-badge)](implementations/acr-control-plane/README.md)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white)]()
 
@@ -344,3 +344,7 @@ Start with the [coding contribution guide](CONTRIBUTING.md#code-contributions) f
 **[runtimecontrol.io/control-plane](https://runtimecontrol.io/control-plane)**
 
 </div>
+
+## Further reading
+
+[Curated resources](docs/resources.md) links the normative standard and relevant integration and policy documentation. For separate PDF, repository specification, and software versions, see [document versions](docs/README.md#normative-source-and-document-versions).

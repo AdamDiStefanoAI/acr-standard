@@ -98,7 +98,8 @@ export declare class ACRDeniedError extends ACRDecisionError {
 export declare class ACREscalatedError extends ACRDecisionError {
     constructor(response: EvaluateResponse);
 }
-export declare function assertRunnableDecision(response: EvaluateResponse): EvaluateResponse;
+declare function assertRunnableDecision(response: EvaluateResponse): EvaluateResponse;
+export { assertRunnableDecision };
 export declare class ACRClient {
     private readonly baseUrl;
     private readonly operatorApiKey?;

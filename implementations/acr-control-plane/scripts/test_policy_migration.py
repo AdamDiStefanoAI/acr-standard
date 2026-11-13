@@ -31,6 +31,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert (destination / "custom.rego").read_bytes() == (source / "custom.rego").read_bytes()
     assert not (destination / "common.rego").exists()
     assert not (destination / "content_safety_test.rego").exists()
+    assert not (destination / "customer_support_test.rego").exists()
     migrate(source, destination)
     (destination / "custom.rego").write_text("keep operator destination")
     try:
@@ -78,7 +79,7 @@ for name in ("data.json", "data.yaml", "data.yml", "policies.tar.gz", ".manifest
 print("PASS: unsupported data/bundle inputs refuse before any copies; source/destination unchanged")
 
 # Test suffixes are only a naming convention, not proof that a module is inert.
-for name in ("customer_override_test.rego", "content_safety_test.rego"):
+for name in ("customer_override_test.rego", "content_safety_test.rego", "customer_support_test.rego"):
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
         source = root / "legacy"
@@ -103,5 +104,5 @@ for name in ("customer_override_test.rego", "content_safety_test.rego"):
         assert digest_tree(destination) == retained
         assert not (destination / "aaa_custom.rego").exists()
 print(
-    "PASS: unknown/modified test-suffix rules refuse atomically; only verified stock test is omitted"
+    "PASS: unknown/modified test-suffix rules refuse atomically; only verified stock tests are omitted"
 )

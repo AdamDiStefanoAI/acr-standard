@@ -1,0 +1,12 @@
+# Only for isolated CI; merge after base, full-stack-test and n8n/compose.yaml.
+services:
+  n8n-demo-executor:
+    command: [uvicorn, examples.n8n.ci_executor:app, --host, '0.0.0.0', --port, '8010', --workers, '1']
+    ports: ['127.0.0.1:8011:8010']
+  n8n:
+    environment:
+      N8N_ENCRYPTION_KEY: ci-n8n-only-synthetic-encryption-key
+      N8N_SECURE_COOKIE: 'false'
+      N8N_PERSONALIZATION_ENABLED: 'false'
+    volumes:
+      - ./examples/n8n/.ci-input:/fixtures:ro

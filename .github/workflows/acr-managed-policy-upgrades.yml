@@ -88,6 +88,7 @@ jobs:
       - name: Capture and stop Docker stack
         if: always()
         run: |
+          mkdir -p managed-policy-evidence
           docker compose logs --no-color --tail 200 > managed-policy-evidence/docker.log
           docker compose down -v --remove-orphans
       - name: Create isolated Kubernetes cluster
@@ -106,6 +107,7 @@ jobs:
       - name: Capture Kubernetes evidence
         if: always()
         run: |
+          mkdir -p managed-policy-evidence
           kubectl --context kind-acr-managed-ci -n acr-system get pods -o wide > managed-policy-evidence/kind-pods.txt || true
           kubectl --context kind-acr-managed-ci -n acr-system get events --sort-by=.metadata.creationTimestamp > managed-policy-evidence/kind-events.txt || true
           kubectl --context kind-acr-managed-ci -n acr-system logs -l app=acr-gateway --all-containers --tail=200 --prefix > managed-policy-evidence/kind.log || true

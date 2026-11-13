@@ -6,7 +6,10 @@ We release patches for the current major/minor version. Security-related updates
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.0.x   | :white_check_mark: |
+| Latest 1.3.x release | :white_check_mark: |
+| Earlier software releases | Upgrade to the latest release |
+
+The table refers to reference-implementation software releases, not normative PDF versions. Unreleased `main` changes are not a supported release or a production deployment.
 
 ## Reporting a Vulnerability
 
