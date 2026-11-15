@@ -2,6 +2,14 @@
 
 This walkthrough uses actual captured output from a disposable GitHub-hosted test on 2026-10-19. All agent, customer and tool values are synthetic. No real customer system, email, payment or model service was used. The final tool effect was a local JSONL ledger entry.
 
+## Executive case study: deciding whether to expand agent authority
+
+The decision is whether an agent can perform a protected action on its own. In this synthetic evaluation, ACR allowed one request and denied another. The fixture ledger recorded one expected effect for the allowed request and no additional effect for the denied one. The corresponding event and export let a reviewer reconcile the policy decision with the observed outcome.
+
+For a real pilot, the workflow’s business owner defines which actions may run automatically. Security defines the policy and names an approver for exceptions. An operator needs a way to pause the workflow; a reviewer needs evidence from outside the agent’s response. Keep the pilot narrow until the team has verified equivalent evidence on its own integration. Pause expansion if protected actions can bypass the control or if decisions and actual outcomes cannot be reconciled.
+
+The recorded run tested the synthetic scenario below. It did not verify a production deployment, an approval or rollback exercise, or independent adoption. A next step for an outside evaluator would be to reproduce it on a pinned revision and repeat it after an upgrade.
+
 ## Source and boundaries
 
 - [Successful run 39208172924](https://github.com/AdamDiStefanoAI/acr-standard/actions/runs/39208172924), attempt 1, completed 2026-10-19 06:10 UTC.
