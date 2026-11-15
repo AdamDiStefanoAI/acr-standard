@@ -1,8 +1,14 @@
 # ACR Framework Roadmap
 
-This document outlines the development plan for the ACR Framework. For high-level governance and maintainer information, see the [README](README.md#framework-governance).
+This document outlines the development plan for the ACR Framework. For high-level governance and maintainer information, see the [governance guide](GOVERNANCE.md).
 
-## Current Release: v1.0 (March 2026)
+## Current status
+
+See [software releases](https://github.com/AdamDiStefanoAI/acr-standard/releases) for the current reference implementation version, [version guidance](docs/README.md#normative-source-and-document-versions) for the normative specification, and the [evidence walkthrough](docs/evidence-walkthrough.md) for an example pinned to its test revision. These are separate artifacts. A release, a passing check, and a synthetic demonstration do not establish production readiness or independent adoption.
+
+The website and PDF version discrepancy remains documented in the version guidance.
+
+## Historical baseline: v1.0 (March 2026)
 
 **Status:** Released
 
@@ -16,9 +22,11 @@ This document outlines the development plan for the ACR Framework. For high-leve
 - Glossary, use cases, and FAQ
 - ACR telemetry schema specification (core event structure)
 
-## Planned Releases
+## Proposed work
 
-### v1.1 (Q2 2026)
+These are topics for review and prioritization, not release-date commitments. The former Q2 and Q3 2026 targets are historical. Detailed ISO/IEC 42001 and SOC 2 mappings are pending. Maintain the existing documentation and link workflows, and record a version-pinned outside evaluation before making stronger adoption claims.
+
+### Expanded implementation and compliance detail
 
 **Focus:** Expanded implementation patterns, standardization, and compliance detail
 
@@ -31,7 +39,7 @@ This document outlines the development plan for the ACR Framework. For high-leve
   - ISO/IEC 42001 detailed mapping (clause-by-clause)
 - **Implementation guide** — Additional runbooks and operational checklists
 
-### v1.2 (Q3 2026)
+### Multi-model orchestration and governance
 
 **Focus:** Multi-model orchestration and broader governance
 
@@ -46,7 +54,7 @@ This document outlines the development plan for the ACR Framework. For high-leve
 
 - **Emerging AI architectures** — Adaptations for new agent patterns, tool-use norms, and infrastructure
 - **Regulatory compliance modules** — Optional, jurisdiction-specific compliance packs
-- **Community and tooling** — Mature community processes, link-check and doc CI, and optional documentation site
+- **Community and tooling** — Mature community processes, ongoing documentation checks, and an optional documentation site
 
 ## Contributing to the Roadmap
 
