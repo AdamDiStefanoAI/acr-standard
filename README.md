@@ -13,8 +13,8 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white)]()
 
 [![NIST AI RMF](https://img.shields.io/badge/maps_to-NIST_AI_RMF-darkblue.svg)](docs/compliance/acr-nist-ai-rmf-mapping.md)
-[![ISO 42001](https://img.shields.io/badge/maps_to-ISO_42001-darkblue.svg)](docs/compliance)
-[![SOC 2](https://img.shields.io/badge/maps_to-SOC_2-darkblue.svg)](docs/compliance)
+[![ISO 42001](https://img.shields.io/badge/ISO_42001-mapping_planned-grey.svg)](docs/compliance/acr-iso42001-mapping.md)
+[![SOC 2](https://img.shields.io/badge/SOC_2-mapping_planned-grey.svg)](docs/compliance/acr-soc2-mapping.md)
 [![OPA](https://img.shields.io/badge/policy-OPA%20%2F%20Rego-7D4698.svg?logo=openpolicyagent&logoColor=white)]()
 [![FastAPI](https://img.shields.io/badge/API-FastAPI-009688.svg?logo=fastapi&logoColor=white)]()
 [![Postgres](https://img.shields.io/badge/store-PostgreSQL-336791.svg?logo=postgresql&logoColor=white)]()
@@ -27,6 +27,12 @@
 ---
 
 </div>
+
+## Evaluate the evidence first
+
+Start with the [runtime evidence walkthrough](docs/evidence-walkthrough.md). This pinned synthetic scenario compares ALLOW and DENY decisions against observed tool effects and the corresponding audit exports. It does not establish production readiness, full conformance, or independent verification of the signer.
+
+For a rollout decision, name the business owner who authorizes the action, the operator who can pause the workflow, and the evidence required to proceed. Verify that all in-scope calls are mediated, denied calls leave no side effects, and audit records can be reconciled. If those checks fail, pause or roll back the rollout rather than expanding scope. See the [adoption guide](ADOPTION.md) and [version notes](docs/README.md#normative-source-and-document-versions).
 
 ## 🎯 Pick Your Path
 
@@ -49,7 +55,7 @@ That gap is where the risk lives: a perfectly compliant agent on day one can dri
 
 ## What ACR is, in plain terms
 
-**ACR is the seatbelt, airbag, ABS and crumple zone for autonomous AI.** It is a runtime control plane that sits between your AI agents and the systems they touch, and it enforces your governance policies on every single action the agent attempts — before that action ever leaves the building.
+**ACR defines runtime controls for autonomous AI.** The reference implementation evaluates protected actions routed through its gateway. Deployment owners must validate enforcement coverage and prevent unmediated execution paths.
 
 It does not replace your AI governance program. It is the part of the program that **executes**.
 
@@ -59,14 +65,14 @@ It does not replace your AI governance program. It is the part of the program th
 |---|---|
 | 🛑 **A real "off switch."** | A single command, kept on a separate system from the agent itself, instantly disables an agent globally. Even a compromised control plane cannot silently re-enable it. |
 | 🚦 **Graduated containment, not just on/off.** | If an agent starts behaving abnormally, the system automatically throttles it, then restricts its tools, then escalates everything to a human, and only kills it as a last resort. Four tiers, no operator paged at 3am for the small stuff. |
-| 👁️ **A complete, signed audit trail of every decision.** | Every action an agent attempted, every policy that fired, every approval, every override — all hashed and exportable as a tamper-evident evidence bundle for auditors and incident response. |
+| 👁️ **Decision evidence for review.** | The reference implementation records structured events and exports evidence bundles for mediated requests. Validate event coverage, signature verification, retention, and durable recording for the deployment in scope. |
 | 🧑‍⚖️ **Human-in-the-loop, where it matters.** | High-risk actions (refunds above a threshold, schema changes, cross-tenant access) automatically pause and route to a named human approver with an SLA. If the human doesn't respond in time, the action auto-denies. |
 | 📉 **Drift detection on agent *behavior*, not just model accuracy.** | The system continuously baselines what "normal" looks like for each agent and raises a score when an agent starts using new tools, denying more often, or behaving more erratically than its baseline allows. |
-| 📜 **Compliance you can actually evidence.** | Pre-built mappings to NIST AI RMF, ISO/IEC 42001, and SOC 2, with the audit artifacts to back them up. Auditors get a download, not a meeting. |
+| 📜 **Compliance you can actually evidence.** | A [NIST AI RMF mapping](docs/compliance/acr-nist-ai-rmf-mapping.md) supports control review. Detailed [ISO/IEC 42001](docs/compliance/acr-iso42001-mapping.md) and [SOC 2](docs/compliance/acr-soc2-mapping.md) mappings are planned. Neither mappings nor synthetic artifacts establish compliance or certification. |
 
 ## The six pillars (the executive version)
 
-ACR enforces six categories of control on every agent action:
+ACR specifies six categories of runtime control. Evaluate enforcement coverage for the protected actions in each deployment:
 
 | # | Pillar | What it answers |
 |---|---|---|
@@ -94,7 +100,7 @@ Doing nothing is itself a decision. ACR gives you a defensible, standards-aligne
 3. **Look at the [NIST AI RMF mapping](docs/compliance/acr-nist-ai-rmf-mapping.md)** to see how it lines up with the framework you are already being measured against.
 4. **Hand the engineering section below to your security architect.** They will be able to tell you in an afternoon whether this fits your stack.
 
-> 💡 **Bottom line for the board:** ACR is the difference between *"we have an AI policy"* and *"we can prove our AI followed the policy on every one of last quarter's 14 million decisions, and we stopped it the three times it tried not to."*
+> **Board decision:** Define which actions are protected, who retains approval authority, and what evidence is required before expanding deployment. The walkthrough is a bounded synthetic example, not a customer result.
 
 ---
 
@@ -199,7 +205,7 @@ sequenceDiagram
 | 1 | **Identity & Purpose Binding** | `pillar1_identity/` | JWT (HS256/RS256/ES256, alg-pinned), Postgres `agents` table, lifecycle state machine (`draft → active → deprecated → retired`), lineage chain, capability tags, heartbeat sweep loop |
 | 2 | **Behavioral Policy Enforcement** | `pillar2_policy/` | OPA via pooled `httpx.AsyncClient`, exponential-backoff retry, `aiobreaker` circuit breaker (5 fails / 60s → fail-secure deny). Policies authored in Rego with a draft → release → activate Studio lifecycle. |
 | 3 | **Autonomy Drift Detection** | `pillar3_drift/` | Four signals — denial rate (0.35), call frequency (0.25), error rate (0.20), action diversity / Shannon entropy (0.20). Two-tier baselines: live ungoverned + versioned governed (`candidate → approved → active`) with dual-approval. |
-| 4 | **Execution Observability** | `pillar4_observability/` | Structured `ACRTelemetryEvent` per request, correlation-ID indexed, OTLP + Prometheus exporters, SHA256-signed evidence bundles via `/acr/evidence/{correlation_id}`. |
+| 4 | **Execution Observability** | `pillar4_observability/` | Structured `ACRTelemetryEvent` per request, correlation-ID indexed, OTLP + Prometheus exporters, evidence bundles with SHA-256 checksums and HMAC signature metadata via `/acr/evidence/{correlation_id}`. |
 | 5 | **Self-Healing Containment** | `pillar5_containment/` | Four graduated tiers — Throttle (0.60) → Restrict (0.75) → Isolate (0.90) → Kill (0.95). Kill writes go through an **independent sidecar** with its own `KILLSWITCH_SECRET` so a compromised gateway cannot silently re-enable agents. |
 | 6 | **Human Authority** | `pillar6_authority/` | Persisted approval requests with configurable SLA (default 240m), background expiry loop, HMAC-SHA256-signed webhooks with idempotency keys, break-glass override (security_admin only, mandatory reason, WARN-logged). |
 
@@ -209,7 +215,7 @@ sequenceDiagram
 - **Stores:** PostgreSQL (monthly partitioned `telemetry_events` and `drift_metrics`, 90-day retention sweep), Redis 7
 - **Policy engine:** Open Policy Agent (Rego), with a draft/release/activate Policy Studio
 - **Auth:** JWT for agents (alg allowlist), API keys *and* OIDC for operators, four RBAC roles (`agent_admin`, `security_admin`, `approver`, `auditor`)
-- **Observability:** structlog JSON logs, OpenTelemetry OTLP traces + metrics, `/acr/metrics` Prometheus endpoint, SHA256-signed evidence bundles
+- **Observability:** structlog JSON logs, OpenTelemetry OTLP traces + metrics, `/acr/metrics` Prometheus endpoint, evidence bundles with SHA-256 checksums and HMAC signature metadata
 - **Deployment:** `docker compose` for local, Kustomize for Kubernetes (HPAs, PDBs, NetworkPolicies, RBAC, init container that runs `alembic upgrade head` automatically)
 - **CI:** GitHub Actions with lint, test, `pip-audit` security scanning
 
@@ -255,7 +261,7 @@ POST   /acr/drift/{id}/baseline/{ver}/approve
 POST   /acr/drift/{id}/baseline/{ver}/activate
 
 GET    /acr/events/{correlation_id}           # decision chain replay
-GET    /acr/evidence/{correlation_id}         # signed evidence bundle (SHA256)
+GET    /acr/evidence/{correlation_id}         # evidence bundle with checksums and signature metadata
 
 POST   /acr/approvals/{id}/approve            # human authority
 POST   /acr/approvals/{id}/override           # break-glass (WARN-logged)
@@ -313,10 +319,10 @@ acr-standard/
 
 The control plane is a reference implementation for evaluation and contribution. Production use requires deployment-specific security review, hardening, and validation; the included examples and development credentials are for isolated local use.
 
-- ✅ Six pillars implemented and tested
-- ✅ Production-grade Kubernetes manifests
+- ✅ Reference modules and tests for the six pillars; not a full conformance claim
+- ✅ Kubernetes manifests for evaluation; production hardening requires deployment-specific review
 - ✅ Automated migrations (no manual `alembic upgrade head`)
-- ✅ Compliance mappings for NIST AI RMF, ISO 42001, SOC 2
+- ✅ NIST AI RMF mapping; detailed ISO/IEC 42001 and SOC 2 mappings remain planned
 - ✅ 160+ unit tests, evidence-bundle integration tests
 - 📋 [Roadmap](./ROADMAP.md) · [Changelog](./CHANGELOG.md) · [Adoption guide](./ADOPTION.md)
 
@@ -334,8 +340,7 @@ Start with the [coding contribution guide](CONTRIBUTING.md#code-contributions) f
 
 <div align="center">
 
-## **Like OWASP for AppSec. Like MITRE ATT&CK for threats.**
-## **ACR is the reference architecture for runtime AI governance.**
+## An open reference architecture for runtime AI governance
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge)](LICENSE)
 [![Adopt ACR](https://img.shields.io/badge/Adopt-ACR-00d4ff.svg?style=for-the-badge)](./ADOPTION.md)
