@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Token issuance rate limit no longer silently disables itself when Redis is unavailable; it fails closed with 503 unless degraded mode was explicitly opted into.
 - Tool-name matching is canonicalized (case-insensitive, whitespace-trimmed) on both the action and the manifest allow/forbidden lists before policy evaluation, and the graduated-containment restrict check uses the same canonical form. `Send_Email` or ` send_email ` can no longer slip past an allowlist written for `send_email`.
 - Graduated-containment tier comments corrected to the thresholds the code actually enforces (RESTRICT at drift >= 0.75, ISOLATE at >= 0.90; comments previously said 0.7 / 0.85).
+- OpenTelemetry family moved from 1.45.1 / instrumentation 0.66b1 to 1.45.2 / 0.66b2: the 0.66b1 family version-locked `opentelemetry-api` to 1.45.1, which carries CVE-2026-126360. Dependency floors and instrumentation pins were updated together; the strict CI pip-audit gate passes on the new family.
 
 ### Documentation
 
