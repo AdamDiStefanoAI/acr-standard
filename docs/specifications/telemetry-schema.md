@@ -110,6 +110,7 @@ Additional custom fields MAY be added under `metadata` or as top-level extension
 6. **Completeness and linkage (§18):** MUST log all actions and all decisions. Required records MUST include the fields listed above, and correlation identifiers or equivalent linkage MUST connect the full action chain. Fields may be mapped to an equivalent implementation schema; omitting required evidence is not an equivalent mapping.
 7. **Retention (§18):** MUST retain all ACR events at least 90 days and high-risk agent events at least 13 months.
 8. **Privacy and export (§18):** MUST apply privacy-preserving treatment to sensitive fields, document field-category treatment (plaintext, redacted, hashed, tokenized, or omitted), and provide audit-ready export without manual reconstruction from unstructured logs.
+9. **Ordering and attribution (§18):** Where records are sequenced or hash-chained, sequence MUST be assigned at decision issuance, and each decision record MUST be attributable to the action it governed through correlation linkage and its sequence position relative to that action. Persistence or export order MUST NOT redefine record order.
 
 ## Versioning
 
