@@ -341,6 +341,7 @@ Compliance modes:
 5. **Audit export:** MUST support audit-ready reconstruction without manual reconstruction from unstructured logs.
 6. **Privacy:** MUST apply privacy-preserving treatment to sensitive log fields and document, by field category, whether fields are plaintext, redacted, hashed, tokenized, or omitted.
 7. **Durable-recording failure (§11):** Inability to durably record required events MUST block high-risk protected actions, record failure through an alternate durable mechanism if available, and transition affected action classes to the documented safe-state if required evidence cannot be preserved.
+8. **Decision ordering and attribution (§18):** Where ACR records are sequenced or hash-chained, a decision record's sequence position MUST be assigned when the decision is issued, not when the record is persisted, exported, or received. Each decision record MUST be bound to the action it governed, through correlation linkage and through its position relative to that action, so a verifier can determine which decision authorized, modified, escalated, or denied each action. Ordering by arrival, persistence, or completion time does not satisfy this requirement. Asynchronous persistence and export remain permitted, provided the assigned order reflects decision issuance.
 
 ### Recommended Features
 1. **Cryptographic hash chaining** as one way to implement high-risk tamper evidence
