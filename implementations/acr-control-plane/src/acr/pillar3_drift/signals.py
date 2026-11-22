@@ -6,8 +6,12 @@ from typing import NamedTuple
 
 from acr.pillar3_drift.models import DriftSignal
 
-# Minimum samples before a baseline is considered stable
-MIN_BASELINE_SAMPLES = 30
+# Minimum samples before a baseline is considered usable for scoring.
+# Kept deliberately low: at 30, a new agent's first 30 actions ran with no
+# drift signal at all, which is precisely the window where a misconfigured
+# or compromised agent does its early damage. Scores from a thin baseline
+# are noisier; the graduated response tiers absorb that noise.
+MIN_BASELINE_SAMPLES = 10
 
 # Weights for each signal in composite score computation
 SIGNAL_WEIGHTS: dict[str, float] = {

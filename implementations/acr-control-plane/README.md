@@ -156,6 +156,8 @@ For OpenAI Agents SDK integrations, see the [OpenAI Agents SDK guard example gui
 
 For Microsoft AutoGen function tools, see the [AutoGen guard example](examples/autogen_guard_example.py) for a mock-backed `guard_tool` integration.
 
+For CrewAI, `guard_crewai_tool` / `guard_crewai_tools` (in `acr.sdk.crewai`) guard existing `@tool` objects in one line per tool; see the [CrewAI guard example](examples/crewai_guard_example.py).
+
 For workflow builders and orchestration tools, there is now an explicit [orchestrator integration guide](docs/orchestrators.md) plus an [n8n reference example](examples/n8n/README.md) showing how to put ACR underneath the workflow layer instead of relying on optional user behavior.
 
 ## Quick Start

@@ -7,6 +7,7 @@ from acr.sdk.client import (
     AsyncACRAgentSession,
     AsyncACRClient,
 )
+from acr.sdk.crewai import guard_crewai_tool, guard_crewai_tools
 from acr.sdk.errors import (
     ACRDecisionError,
     ACRDeniedError,
@@ -32,5 +33,7 @@ __all__ = [
     "IntentRequest",
     "build_langchain_tool",
     "guard_async_tool",
+    "guard_crewai_tool",
+    "guard_crewai_tools",
     "guard_tool",
 ]

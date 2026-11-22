@@ -6,15 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-22
+
 ### Added
 
 - Installed `acr --version` CLI, offline LangGraph refund example, TypeScript decision-helper tests/example and Python parity inventory, customer-support Rego regression tests, and opt-in parameter PII policy example.
 - Curated external resources and authenticated n8n webhook onboarding with a synthetic protected executor. See the n8n README for the exact validation scope.
 - Safe approval resumption and durable execution receipts from PR #54 (already merged); these remain unreleased until a separate release is made.
+- Reference-implementation conformance with the §18 ordering rule: every policy decision is assigned a per-agent sequence position when the decision is issued (new `decision_sequences` counter and `policy_decisions.sequence` column, migration 0015), and decisions are durably recorded in the same step, before the evaluate response is returned and before any approved action executes. If recording fails, the evaluation fails secure with a 503 `EVIDENCE_PERSISTENCE_FAILED` deny. Telemetry events carry the same `decision_sequence`, so the hash-chained observability copy can be checked against issuance order rather than flush order.
+- CrewAI adapter (`acr.sdk.crewai`): `guard_crewai_tool` / `guard_crewai_tools` guard existing CrewAI `@tool` objects in one line per tool, returning a same-named CrewAI tool whose invocations ACR authorizes first. Verified against CrewAI 1.15.44.
 
 ### Changed
 
 - Spec clarification (§18): the evidence-record requirements now state the ordering rule explicitly. Where records are sequenced or hash-chained, a decision record's sequence position is assigned when the decision is issued, not when the record is persisted, exported, or received, and each decision record is bound to the action it governed through correlation linkage and sequence position. Ordering by arrival, persistence, or completion time does not satisfy the requirement; asynchronous persistence and export remain permitted provided the assigned order reflects decision issuance. Clarification only: no new fields, no structural change, and the repository specification stays v1.2.0. Reference-implementation conformance is tracked separately.
+- Fail-closed posture is now the default in every environment. Previously, Redis-backed runtime controls (rate limit, graduated containment, spend counters) silently degraded in `development`/`test`; degraded behavior now requires the explicit `ALLOW_DEGRADED_DEPENDENCIES` opt-in, and startup refuses that opt-in outside development/test. A deployment that forgets to set `ACR_ENV` no longer loses its controls silently.
+- Drift detection cadence: the drift check now runs on every evaluation by default (new `DRIFT_CHECK_EVERY_N` setting, default 1; the previous hard-coded every-10th-evaluation throttle let slow, sparse deviations accumulate below the sampling line), and the baseline floor drops from 30 to 10 samples so a new agent does not run its first 30 actions with no drift signal.
+
+### Fixed
+
+- Brokered executor credentials are now bound to the execution payload: `X-ACR-Brokered-Credential` carries a `payload_sha256` claim (the binding `X-ACR-Execution-Token` already had), verification compares it against the actual request body, and pre-binding credentials without the claim are rejected on the payload-verification path. A credential minted for one payload can no longer be replayed with another.
+- Token issuance rate limit no longer silently disables itself when Redis is unavailable; it fails closed with 503 unless degraded mode was explicitly opted into.
+- Tool-name matching is canonicalized (case-insensitive, whitespace-trimmed) on both the action and the manifest allow/forbidden lists before policy evaluation, and the graduated-containment restrict check uses the same canonical form. `Send_Email` or ` send_email ` can no longer slip past an allowlist written for `send_email`.
+- Graduated-containment tier comments corrected to the thresholds the code actually enforces (RESTRICT at drift >= 0.75, ISOLATE at >= 0.90; comments previously said 0.7 / 0.85).
+- OpenTelemetry family moved from 1.45.1 / instrumentation 0.66b1 to 1.45.2 / 0.66b2: the 0.66b1 family version-locked `opentelemetry-api` to 1.45.1, which carries CVE-2026-126360. Dependency floors and instrumentation pins were updated together; the strict CI pip-audit gate passes on the new family.
 
 ### Documentation
 

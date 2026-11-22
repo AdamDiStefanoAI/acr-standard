@@ -231,10 +231,18 @@ def test_execution_and_brokered_credentials_round_trip():
         correlation_id="corr-1",
         audience="tool:query_customer_db",
         scopes=["execute"],
+        payload=_PAYLOAD,
     )
     assert verify_brokered_execution_credential(
         credential, audience="tool:query_customer_db"
     ).scopes == ("execute",)
+    assert verify_brokered_execution_credential(
+        credential, audience="tool:query_customer_db", payload=_PAYLOAD
+    ).payload_sha256 == execution_payload_sha256(_PAYLOAD)
+    with pytest.raises(InvalidExecutionAuthorizationError):
+        verify_brokered_execution_credential(
+            credential, audience="tool:query_customer_db", payload={"tampered": True}
+        )
     with pytest.raises(InvalidExecutionAuthorizationError):
         verify_brokered_execution_credential(credential, audience="tool:other")
     with pytest.raises(InvalidExecutionAuthorizationError):

@@ -85,6 +85,7 @@ def test_executor_verifies_real_credentials_before_tool_execution(monkeypatch, c
         correlation_id="executor-test-call",
         audience="tool:query_customer_db",
         scopes=["tool:query_customer_db:execute"],
+        payload=payload,
     )
     headers["X-ACR-Credential-Audience"] = "tool:query_customer_db"
     if case == "missing-brokered":

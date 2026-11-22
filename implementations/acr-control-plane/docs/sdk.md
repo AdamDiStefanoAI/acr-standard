@@ -104,6 +104,36 @@ That wrapper will:
 - apply modified parameters on `modify`
 - return gateway-managed execution output when configured not to execute locally
 
+## CrewAI Adapter
+
+`acr.sdk.crewai` guards tools built with CrewAI's `@tool` decorator without
+hand-written wrapper functions:
+
+- `guard_crewai_tool(tool, session=...)` — guard one existing tool; returns a
+  CrewAI tool with the same name and description.
+- `guard_crewai_tools([...], session=...)` — guard a whole tool list at once.
+
+```python
+from crewai.tools import tool
+from acr.sdk import ACRClient
+from acr.sdk.crewai import guard_crewai_tool
+
+session = ACRClient(base_url="https://acr.example.com", operator_api_key="<redacted>").issue_agent_session("ops-agent")
+
+@tool("restart_service")
+def restart_service(service_name: str) -> str:
+    """Restart a named service."""
+    return f"restarted {service_name}"
+
+restart_service = guard_crewai_tool(restart_service, session=session)
+```
+
+CrewAI itself is supplied by your agent application; the adapter imports it
+only when rebuilding the guarded tool, and otherwise returns the guarded
+plain function. Class-based `BaseTool` subclasses are not rewrappable
+without losing their schema — guard the function the tool calls instead.
+See the [CrewAI guard example](../examples/crewai_guard_example.py).
+
 The Python SDK rejects ALLOW/MODIFY on non-200 evaluation responses. A MODIFY
 response must include an explicit replacement action and parameters for the
 requested tool; missing transformations and changed tool names raise an SDK

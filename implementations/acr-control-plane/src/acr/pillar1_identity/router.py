@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from acr.common.operator_auth import OperatorPrincipal, require_operator_roles
 from acr.common.redis_client import get_redis_or_none
+from acr.config import runtime_dependencies_fail_closed
 from acr.db.database import get_db
 from acr.pillar1_identity import registry
 from acr.pillar1_identity.models import (
@@ -38,11 +39,21 @@ async def _check_token_rate_limit(agent_id: str) -> None:
     """
     Increment the hourly token counter for this agent.
     Raises HTTP 429 if the limit is exceeded.
-    Silently passes if Redis is unavailable (graceful degradation).
+
+    The limit is a security control, not a cache convenience: when Redis is
+    unavailable the check fails closed (HTTP 503) unless the deployment has
+    explicitly opted into degraded dependency mode. Previously a Redis
+    outage silently disabled the limit, making token issuance unbounded.
     """
     redis = get_redis_or_none()
     if redis is None:
-        return  # degrade gracefully — never block issuance due to missing cache
+        if runtime_dependencies_fail_closed():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Token issuance rate limiter unavailable: Redis is not initialized",
+            )
+        logger.warning("token_rate_limit_degraded", agent_id=agent_id, reason="redis_unavailable")
+        return
 
     key = f"{_TOKEN_RATE_KEY_PREFIX}{agent_id}"
     try:
@@ -62,7 +73,11 @@ async def _check_token_rate_limit(agent_id: str) -> None:
     except HTTPException:
         raise
     except Exception as exc:
-        # Redis error — log and allow; never block issuance on cache failure
+        if runtime_dependencies_fail_closed():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Token issuance rate limiter unavailable: Redis error",
+            ) from exc
         logger.warning("token_rate_limit_redis_error", agent_id=agent_id, error=str(exc))
 
 
