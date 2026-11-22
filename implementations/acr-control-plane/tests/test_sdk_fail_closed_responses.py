@@ -239,7 +239,11 @@ async def test_sdk_accepts_actual_gateway_modify_response(
     guarded = guard_async_tool(query_customer_db, session=session)
     with (
         patch("acr.gateway.router.evaluate_policy", new_callable=AsyncMock, return_value=policy),
-        patch("acr.gateway.router._persist_policy_decisions", new_callable=AsyncMock),
+        patch(
+            "acr.gateway.router._record_policy_decisions",
+            new_callable=AsyncMock,
+            return_value=1,
+        ),
     ):
         assert await guarded(customer_id="C-001") == expected
     assert calls == [expected]

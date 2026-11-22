@@ -76,6 +76,7 @@ async def _do_execute(
             correlation_id=correlation_id,
             audience=audience,
             scopes=scopes,
+            payload=payload,
             approval_request_id=approval_request_id,
         )
     try:

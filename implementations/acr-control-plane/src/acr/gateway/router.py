@@ -7,12 +7,17 @@ Synchronous pipeline (<200ms budget):
   [3] Rate limit — server-side Redis counter (overrides self-reported context)
   [4] Policy evaluation — OPA allow/deny/escalate
   [5] Output filter — PII redaction on parameters
-  [6] (if escalate) Approval queue creation
+  [6] Decision recording — every decision is assigned its §18 sequence
+      position and durably recorded before the response is returned and
+      before any approved action executes (§11/§18). If the decision cannot
+      be recorded, the evaluation fails secure with a 503 deny.
+  [7] (if escalate) Approval queue creation
 
 Async background tasks (non-blocking):
-  [7] Telemetry persistence
-  [8] Drift metric sample recording
-  [9] Drift score computation + graduated response check
+  [8] Telemetry persistence (observability copy; the policy decision
+      records written in [6] are the durable evidence of the decision)
+  [9] Drift metric sample recording
+  [10] Drift score computation + graduated response check
 """
 
 from __future__ import annotations
@@ -23,6 +28,8 @@ from datetime import UTC, datetime
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends
 from fastapi.responses import JSONResponse
+from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from acr.common.correlation import get_correlation_id
@@ -37,7 +44,7 @@ from acr.common.redis_client import get_redis_or_none
 from acr.common.time import iso_utcnow
 from acr.config import runtime_dependencies_fail_closed, settings
 from acr.db.database import BackgroundSessionLocal, get_db
-from acr.db.models import PolicyDecisionRecord
+from acr.db.models import DecisionSequenceRecord, PolicyDecisionRecord
 from acr.gateway.auth import require_agent_token
 from acr.gateway.executor import execute_action
 from acr.gateway.models import EvaluateRequest, EvaluateResponse
@@ -48,7 +55,7 @@ from acr.gateway.spend_control import (
 )
 from acr.pillar1_identity.registry import get_manifest
 from acr.pillar1_identity.validator import validate_agent_identity
-from acr.pillar2_policy.engine import evaluate_policy
+from acr.pillar2_policy.engine import canonical_tool_name, evaluate_policy
 from acr.pillar2_policy.models import PolicyDecision
 from acr.pillar2_policy.output_filter import ParameterFilterResult, filter_parameters
 from acr.pillar3_drift.baseline import record_metric_sample
@@ -68,8 +75,9 @@ router = APIRouter(prefix="/acr", tags=["Gateway"])
 _RATE_KEY_PREFIX = "acr:rate:"
 # Redis key prefix for cached drift scores
 _DRIFT_SCORE_PREFIX = "acr:drift:score:"
-# Drift check runs at most once per N evaluations per agent (avoids DB hit every call)
-_DRIFT_CHECK_EVERY_N = 10
+# Drift check cadence is settings.drift_check_every_n (default 1: every
+# evaluation). The previous hard-coded every-10th-evaluation throttle let
+# slow, sparse deviations accumulate below the sampling line.
 
 
 # ── Background tasks ──────────────────────────────────────────────────────────
@@ -133,15 +141,53 @@ async def _persist_telemetry(event_dict: dict) -> None:
             logger.error("Background telemetry persist failed", error=str(exc), exc_info=True)
 
 
-async def _persist_policy_decisions(
+async def _assign_decision_sequence(db: AsyncSession, agent_id: str) -> int:
+    """Atomically advance and return the agent's §18 decision sequence.
+
+    The increment runs inside the transaction that records the decisions, so
+    a decision's sequence position is fixed when the decision is issued and
+    commits (or rolls back) together with the decision records themselves.
+    """
+    stmt = (
+        update(DecisionSequenceRecord)
+        .where(DecisionSequenceRecord.agent_id == agent_id)
+        .values(last_sequence=DecisionSequenceRecord.last_sequence + 1)
+        .returning(DecisionSequenceRecord.last_sequence)
+    )
+    value = (await db.execute(stmt)).scalar_one_or_none()
+    if value is not None:
+        return int(value)
+    # First recorded decision for this agent: create the counter at 1. When
+    # two first evaluations race, this insert can lose to the other
+    # transaction's; _record_policy_decisions retries the whole recording
+    # on that conflict, and the retry takes the UPDATE path above.
+    db.add(DecisionSequenceRecord(agent_id=agent_id, last_sequence=1))
+    await db.flush()
+    return 1
+
+
+async def _record_policy_decisions(
+    db: AsyncSession,
     *,
     agent_id: str,
     correlation_id: str,
     tool_name: str,
     decisions: list[dict],
-) -> None:
-    async with BackgroundSessionLocal() as db:
+) -> int:
+    """Durably record one evaluation's policy decisions before responding.
+
+    Returns the §18 decision sequence assigned at issuance. Raises on any
+    persistence failure; the caller fails secure (§11: an action whose
+    decision cannot be durably recorded must not proceed).
+
+    Transient transaction conflicts (two first evaluations racing to create
+    the agent's sequence counter, serialization failures under concurrency)
+    are retried a bounded number of times before giving up.
+    """
+    last_exc: Exception | None = None
+    for _attempt in range(3):
         try:
+            sequence = await _assign_decision_sequence(db, agent_id)
             for item in decisions:
                 db.add(
                     PolicyDecisionRecord(
@@ -152,12 +198,16 @@ async def _persist_policy_decisions(
                         reason=item.get("reason"),
                         tool_name=tool_name,
                         latency_ms=item.get("latency_ms"),
+                        sequence=sequence,
                     )
                 )
             await db.commit()
-        except Exception as exc:
+            return sequence
+        except (IntegrityError, OperationalError) as exc:
             await db.rollback()
-            logger.error("Background policy decision persist failed", error=str(exc), exc_info=True)
+            last_exc = exc
+    assert last_exc is not None
+    raise last_exc
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -220,17 +270,25 @@ async def _get_cached_drift_score(agent_id: str) -> float | None:
 
 
 async def _should_run_drift_check(agent_id: str) -> bool:
-    """Return True every N-th call to throttle DB drift computations."""
+    """Return True every N-th call, per settings.drift_check_every_n.
+
+    The counter only throttles a background detection job; it is not a
+    control. When Redis is unavailable the check runs rather than silently
+    never running.
+    """
+    every_n = max(1, settings.drift_check_every_n)
+    if every_n == 1:
+        return True
     redis = get_redis_or_none()
     if redis is None:
-        return False
+        return True
     key = f"acr:drift:counter:{agent_id}"
     try:
         n = await redis.incr(key)
         await redis.expire(key, 3600)
-        return (n % _DRIFT_CHECK_EVERY_N) == 0
+        return (n % every_n) == 0
     except Exception:
-        return False
+        return True
 
 
 # ── Main endpoint ─────────────────────────────────────────────────────────────
@@ -275,7 +333,13 @@ async def evaluate(
         # ── [1b] Graduated containment enforcement (Redis reads) ─────────────
         # These keys are written by the drift-scoring background worker in
         # graduated.py when an agent's drift score crosses a tier threshold.
+        # Containment state is a control input: when it cannot be read, the
+        # evaluation fails closed rather than proceeding uncontained.
         redis = get_redis_or_none()
+        if redis is None and runtime_dependencies_fail_closed():
+            raise RuntimeControlDependencyError(
+                "Graduated containment state unavailable: Redis is not initialized"
+            )
         if redis is not None:
             # Tier 3 — Isolate: override every decision to escalate
             isolate_val = await redis.get(f"{_ISOLATE_PREFIX}{req.agent_id}")
@@ -295,7 +359,8 @@ async def evaluate(
                 import json as _json
 
                 allowed_tools = _json.loads(restrict_val)
-                if req.action.tool_name not in allowed_tools:
+                canonical_allowed = [canonical_tool_name(t) for t in allowed_tools]
+                if canonical_tool_name(req.action.tool_name) not in canonical_allowed:
                     return JSONResponse(
                         status_code=403,
                         content={
@@ -424,7 +489,41 @@ async def evaluate(
         # Record OTEL metrics for all decisions
         _record_evaluate_metrics(req.agent_id, response_decision, total_ms)
 
-        # ── [6] Escalate → approval queue ─────────────────────────────────────
+        # ── [6] Durable decision recording (§11/§18) ──────────────────────────
+        # The decision is assigned its sequence position and committed before
+        # the response is returned and before any approved action executes.
+        # A crash after this point cannot lose the decision, and the sequence
+        # reflects issuance order, not persistence or completion order. If
+        # recording fails, the evaluation fails secure: an unrecorded
+        # decision is not evidence of enforcement.
+        try:
+            decision_sequence = await _record_policy_decisions(
+                db,
+                agent_id=req.agent_id,
+                correlation_id=correlation_id,
+                tool_name=effective_action["tool_name"],
+                decisions=[d.model_dump(mode="json") for d in response_decisions],
+            )
+        except Exception as exc:
+            await db.rollback()
+            logger.error(
+                "Policy decision recording failed",
+                agent_id=req.agent_id,
+                correlation_id=correlation_id,
+                error=str(exc),
+                exc_info=True,
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "decision": "deny",
+                    "correlation_id": correlation_id,
+                    "reason": "Decision could not be durably recorded; failing secure",
+                    "error_code": "EVIDENCE_PERSISTENCE_FAILED",
+                },
+            )
+
+        # ── [7] Escalate → approval queue ─────────────────────────────────────
         if response_decision == "escalate":
             authorization_snapshot = None
             if policy_result.policy_identity is not None:
@@ -483,15 +582,9 @@ async def evaluate(
                         "estimated_cost_usd": estimated_action_cost_usd,
                         "authoritative_hourly_spend_usd": projected_hourly_spend_usd,
                         "cost_basis": "authorization_estimate",
+                        "decision_sequence": decision_sequence,
                     },
                 },
-            )
-            background_tasks.add_task(
-                _persist_policy_decisions,
-                agent_id=req.agent_id,
-                correlation_id=correlation_id,
-                tool_name=effective_action["tool_name"],
-                decisions=[d.model_dump(mode="json") for d in response_decisions],
             )
             return JSONResponse(
                 status_code=202,
@@ -505,7 +598,7 @@ async def evaluate(
                 },
             )
 
-        # ── [7] Deny ──────────────────────────────────────────────────────────
+        # ── [8] Deny ──────────────────────────────────────────────────────────
         if response_decision == "deny":
             _queue_background_tasks(
                 background_tasks,
@@ -541,15 +634,9 @@ async def evaluate(
                         "estimated_cost_usd": estimated_action_cost_usd,
                         "authoritative_hourly_spend_usd": projected_hourly_spend_usd,
                         "cost_basis": "authorization_estimate",
+                        "decision_sequence": decision_sequence,
                     },
                 },
-            )
-            background_tasks.add_task(
-                _persist_policy_decisions,
-                agent_id=req.agent_id,
-                correlation_id=correlation_id,
-                tool_name=effective_action["tool_name"],
-                decisions=[d.model_dump(mode="json") for d in response_decisions],
             )
             return JSONResponse(
                 status_code=403,
@@ -564,7 +651,7 @@ async def evaluate(
                 },
             )
 
-        # ── [8] Allow / Modify ────────────────────────────────────────────────
+        # ── [9] Allow / Modify ────────────────────────────────────────────────
         execution_result = None
         if settings.execute_allowed_actions:
             await _adjust_authoritative_spend(req.agent_id, estimated_action_cost_usd)
@@ -615,15 +702,9 @@ async def evaluate(
                     "estimated_cost_usd": estimated_action_cost_usd,
                     "authoritative_hourly_spend_usd": projected_hourly_spend_usd,
                     "cost_basis": "authorization_estimate",
+                    "decision_sequence": decision_sequence,
                 },
             },
-        )
-        background_tasks.add_task(
-            _persist_policy_decisions,
-            agent_id=req.agent_id,
-            correlation_id=correlation_id,
-            tool_name=effective_action["tool_name"],
-            decisions=[d.model_dump(mode="json") for d in response_decisions],
         )
         content = {
             "decision": response_decision,

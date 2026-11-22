@@ -35,6 +35,17 @@ class Settings(BaseSettings):
     acr_version: str = "1.1.0"
     schema_bootstrap_mode: str = "auto"
     strict_dependency_startup: bool = False
+    # Degraded dependency mode: when True, Redis-backed runtime controls
+    # (rate limits, containment state, token-issuance limits, spend counters)
+    # degrade gracefully instead of failing closed when Redis is unavailable.
+    # This is an explicit operator opt-in for local development only. It is
+    # never implied by the environment name, and startup refuses it outside
+    # development/test (see assert_production_secrets).
+    allow_degraded_dependencies: bool = False
+
+    # ── Drift detection ─────────────────────────────────────────────────────
+    # Run the drift check on every Nth evaluation per agent. 1 = every call.
+    drift_check_every_n: int = 1
 
     # ── Agent registry health sweep ──────────────────────────────────────────
     # Agents that have heartbeated at least once but haven't sent another in
@@ -131,6 +142,12 @@ def assert_production_secrets() -> None:
     if settings.acr_env in ("development", "test"):
         return
 
+    if settings.allow_degraded_dependencies:
+        raise RuntimeError(
+            "ALLOW_DEGRADED_DEPENDENCIES must not be enabled outside "
+            "development/test: Redis-backed runtime controls would fail open."
+        )
+
     # Algorithm allowlist — fail loudly on anything we don't explicitly support
     if settings.jwt_algorithm not in ALLOWED_JWT_ALGORITHMS:
         raise RuntimeError(
@@ -224,8 +241,14 @@ def effective_schema_bootstrap_mode() -> str:
 
 
 def runtime_dependencies_fail_closed() -> bool:
-    """Enterprise posture: fail closed outside development/test."""
-    return settings.strict_dependency_startup or settings.acr_env not in ("development", "test")
+    """Fail closed unless degraded dependency mode was explicitly enabled.
+
+    Degraded mode is an explicit operator opt-in (ALLOW_DEGRADED_DEPENDENCIES)
+    for local development. It is never implied by the environment name alone:
+    a deployment that forgets to set ACR_ENV no longer silently loses its
+    rate limits, containment state, spend counters, or token-issuance limits.
+    """
+    return not settings.allow_degraded_dependencies
 
 
 @lru_cache(maxsize=1)

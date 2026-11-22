@@ -52,7 +52,18 @@ async def db(test_engine) -> AsyncGenerator[AsyncSession, None]:
 
 @pytest_asyncio.fixture(scope="function")
 async def async_client(test_engine) -> AsyncGenerator[AsyncClient, None]:
-    """HTTP test client with the test DB injected."""
+    """HTTP test client with the test DB injected.
+
+    These fixtures run with no Redis, which since the fail-closed posture
+    change means an explicitly degraded deployment. Opt in for the duration
+    of the fixture, the same way a local developer now must; tests for the
+    fail-closed behavior itself live in test_hardening.py and turn the
+    opt-in back off.
+    """
+    from acr.config import settings
+
+    previous_degraded = settings.allow_degraded_dependencies
+    settings.allow_degraded_dependencies = True
     factory = async_sessionmaker(bind=test_engine, expire_on_commit=False, class_=AsyncSession)
 
     async def override_get_db():
@@ -95,6 +106,7 @@ async def async_client(test_engine) -> AsyncGenerator[AsyncClient, None]:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             yield client
 
+    settings.allow_degraded_dependencies = previous_degraded
     app.dependency_overrides.clear()
 
 

@@ -99,6 +99,36 @@ async def _call_opa(opa_input: dict) -> dict:
     ) from last_exc
 
 
+def canonical_tool_name(name: object) -> str:
+    """Canonical form used for every tool-name comparison.
+
+    Tool names are matched case-insensitively with surrounding whitespace
+    ignored. Without canonicalization, `Send_Email` or ` send_email ` would
+    slip past an allowlist written for `send_email` while still reaching the
+    same downstream tool. Canonicalization applies to matching only: the
+    caller's original tool name is what gets recorded and executed.
+    """
+    return str(name).strip().lower()
+
+
+def _canonicalized(manifest: dict, action: dict) -> tuple[dict, dict]:
+    """Return manifest/action copies whose tool names are canonical.
+
+    Applies to the action's tool_name and to the manifest's allowed and
+    forbidden tool lists, so both sides of every comparison in the policy
+    bundle see the same canonical form.
+    """
+    action_copy = dict(action)
+    if action_copy.get("tool_name") is not None:
+        action_copy["tool_name"] = canonical_tool_name(action_copy["tool_name"])
+    manifest_copy = dict(manifest)
+    for key in ("allowed_tools", "forbidden_tools"):
+        tools = manifest_copy.get(key)
+        if isinstance(tools, list):
+            manifest_copy[key] = [canonical_tool_name(t) for t in tools]
+    return manifest_copy, action_copy
+
+
 async def evaluate_policy(
     agent_manifest: dict,
     action: dict,
@@ -120,10 +150,11 @@ async def evaluate_policy(
         **context,  # caller's real values override the defaults
     }
 
+    canonical_manifest, canonical_action = _canonicalized(agent_manifest, action)
     opa_input = {
         "input": {
-            "agent": agent_manifest,
-            "action": action,
+            "agent": canonical_manifest,
+            "action": canonical_action,
             "context": safe_context,
         }
     }

@@ -37,6 +37,7 @@ class BrokeredExecutionCredential:
     audience: str
     scopes: tuple[str, ...]
     approval_request_id: str | None
+    payload_sha256: str
 
 
 def canonicalize_execution_payload(payload: dict[str, Any]) -> str:
@@ -127,8 +128,16 @@ def build_brokered_execution_credential(
     correlation_id: str,
     audience: str,
     scopes: list[str] | tuple[str, ...],
+    payload: dict[str, Any],
     approval_request_id: str | None = None,
 ) -> str:
+    """Mint a brokered credential bound to one exact execution payload.
+
+    The payload hash claim is mandatory: without it, a credential minted for
+    one payload could be replayed with a different payload on the
+    gateway-to-executor path. This mirrors the binding X-ACR-Execution-Token
+    has always carried.
+    """
     secret = _require_credential_secret()
     now = datetime.now(UTC)
     claims = {
@@ -140,6 +149,7 @@ def build_brokered_execution_credential(
         "approval_request_id": approval_request_id,
         "aud": audience,
         "scopes": list(scopes),
+        "payload_sha256": execution_payload_sha256(payload),
         "iat": int(now.timestamp()),
         "nbf": int(now.timestamp()),
         "exp": int((now + timedelta(seconds=settings.executor_credential_ttl_seconds)).timestamp()),
@@ -151,7 +161,11 @@ def verify_brokered_execution_credential(
     token: str,
     *,
     audience: str,
+    payload: dict[str, Any] | None = None,
 ) -> BrokeredExecutionCredential:
+    """Verify a brokered credential. When `payload` is given, the credential
+    must be bound to exactly that payload; credentials minted before payload
+    binding existed carry no hash claim and are rejected on this path."""
     secret = _require_credential_secret()
     try:
         claims = decode_jwt(
@@ -183,6 +197,17 @@ def verify_brokered_execution_credential(
             "Brokered execution credential is missing required claims"
         )
 
+    payload_sha256 = str(claims.get("payload_sha256") or "")
+    if payload is not None:
+        if not payload_sha256:
+            raise InvalidExecutionAuthorizationError(
+                "Brokered execution credential is not bound to a payload"
+            )
+        if not hmac.compare_digest(execution_payload_sha256(payload), payload_sha256):
+            raise InvalidExecutionAuthorizationError(
+                "Brokered execution credential does not match the request payload"
+            )
+
     approval_request_id = claims.get("approval_request_id")
     return BrokeredExecutionCredential(
         subject=subject,
@@ -192,6 +217,7 @@ def verify_brokered_execution_credential(
         audience=audience,
         scopes=tuple(str(scope) for scope in scopes_raw),
         approval_request_id=str(approval_request_id) if approval_request_id else None,
+        payload_sha256=payload_sha256,
     )
 
 
@@ -263,6 +289,7 @@ async def require_gateway_execution(
 
 
 async def require_brokered_execution_credential(
+    request: Request,
     x_acr_brokered_credential: str | None = Header(default=None),
     x_acr_credential_audience: str | None = Header(default=None),
 ) -> BrokeredExecutionCredential:
@@ -271,7 +298,18 @@ async def require_brokered_execution_credential(
     if not x_acr_credential_audience:
         raise InvalidExecutionAuthorizationError("X-ACR-Credential-Audience header is required")
 
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as exc:
+        raise InvalidExecutionAuthorizationError(
+            "Execution request body must be valid JSON"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise InvalidExecutionAuthorizationError("Execution request body must be a JSON object")
+
     return verify_brokered_execution_credential(
         x_acr_brokered_credential,
         audience=x_acr_credential_audience,
+        payload=payload,
     )

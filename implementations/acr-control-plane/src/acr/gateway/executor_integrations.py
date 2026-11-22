@@ -39,6 +39,7 @@ def _integration_headers(
             correlation_id=correlation_id,
             audience=audience,
             scopes=[str(scope) for scope in scopes_raw],
+            payload=payload,
             approval_request_id=approval_request_id,
         )
     api_key = _resolve_secret_value(str(config.get("api_key") or "").strip())

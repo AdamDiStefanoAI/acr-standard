@@ -7,6 +7,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -112,9 +113,34 @@ class PolicyDecisionRecord(Base):
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     tool_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # §18 decision sequence: assigned when the decision is issued, before the
+    # response is returned and before any approved action executes. All policy
+    # decision rows from one evaluation share the evaluation's sequence, so a
+    # verifier can order decisions by issuance rather than by persistence,
+    # arrival, or completion time. Null only on rows written before this
+    # column existed.
+    sequence: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     agent_ref: Mapped[AgentRecord] = relationship(back_populates="policy_decisions")
+
+
+class DecisionSequenceRecord(Base):
+    """Per-agent monotonic counter backing the §18 decision sequence.
+
+    The counter is incremented inside the same transaction that durably
+    records the policy decisions, so the sequence position of a decision is
+    fixed at issuance and survives restarts. One row per agent.
+    """
+
+    __tablename__ = "decision_sequences"
+
+    agent_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("agents.agent_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    last_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
 
 # ── Telemetry events ──────────────────────────────────────────────────────────

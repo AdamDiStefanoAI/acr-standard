@@ -11,9 +11,9 @@ class ContainmentTier(IntEnum):
     """Graduated response tiers, per spec."""
 
     NONE = 0
-    THROTTLE = 1  # drift >= 0.6 — reduce rate limit 50%
-    RESTRICT = 2  # drift >= 0.7 — remove high-risk tools
-    ISOLATE = 3  # drift >= 0.85 — read-only mode
+    THROTTLE = 1  # drift >= 0.60 — reduce rate limit 50%
+    RESTRICT = 2  # drift >= 0.75 — remove high-risk tools
+    ISOLATE = 3  # drift >= 0.90 — read-only mode
     KILL = 4  # drift >= 0.95 — full shutdown
 
 
