@@ -1,0 +1,105 @@
+# ACR red-team retry on GitHub Actions.
+# Approved by Adam 2026-11-22 after the Nov 8 local run failed: the local
+# VM's runtime cell denies setns(2), so no container can start there.
+# GitHub runners run the same disposable full-stack the validation
+# workflow uses, so the categories execute there instead.
+#
+# Manual dispatch only — there is no push/PR trigger on purpose: every
+# run is a human decision. The run uploads red-team-evidence/ (evidence
+# JSONL + compose logs) as an artifact; reports are written from that
+# evidence only. The env values below are the public synthetic CI
+# credentials copied verbatim from acr-full-stack-validation.yml, valid
+# only for this disposable stack. The harness lives at
+# implementations/acr-control-plane/scripts/red_team_harness.py; this
+# workflow fails fast if it is absent and never reports a pass for work
+# it did not do.
+#
+# SCOPE (from the approved plan, 2026-11-08):
+#   Target: reference implementation at the checked-out head (recorded in
+#   evidence/revision.txt; re-verify it matches the intended release).
+#   Disposable stack only, synthetic data only, demo credentials only.
+#   No production, hosted service, or anyone else's deployment. No code
+#   changes, branches, merges, pushes, or PRs from the run itself.
+#   Categories are run via the harness; only category 1 (content-guardrail
+#   evasion, post-fix) is implemented in the companion harness draft.
+#   Requesting any other category today exits non-zero with
+#   "not implemented" — a category that did not run is never a pass.
+#   Default input is "1" for exactly that reason; change it only when the
+#   harness implements the category you ask for.
+
+name: ACR red-team (disposable, manual only)
+on:
+  workflow_dispatch:
+    inputs:
+      categories:
+        description: 'Attack categories to run, comma-separated (only "1" is implemented in the harness draft)'
+        required: true
+        default: '1'
+        type: string
+permissions:
+  contents: read
+jobs:
+  red-team:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: implementations/acr-control-plane
+    env:
+      COMPOSE_PROJECT_NAME: acr-redteam-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_FILE: docker-compose.yml:docker-compose.full-stack-test.yml
+      OPERATOR_API_KEYS_JSON: '{"ci-operator-only":{"subject":"ci-operator","roles":["agent_admin","approver","security_admin","auditor","killswitch_operator"]}}'
+      SERVICE_OPERATOR_API_KEY: ci-operator-only
+      EXECUTOR_HMAC_SECRET: ci-execution-only-not-a-production-secret-123456789
+      EXECUTOR_CREDENTIAL_SECRET: ci-brokered-only-not-a-production-secret-987654321
+      JWT_SECRET_KEY: ci-jwt-only-not-a-production-secret-123456789012345
+      KILLSWITCH_SECRET: ci-kill-only-not-a-production-secret-12345678901234
+      ACR_ENV: development
+      OPERATOR_API_KEY: "ci-operator-only"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record revision and runtime
+        run: |
+          mkdir -p red-team-evidence
+          git rev-parse HEAD > red-team-evidence/revision.txt
+          git log -1 --format='%H %ci %s' >> red-team-evidence/revision.txt
+          docker version > red-team-evidence/docker-version.txt
+          docker compose version >> red-team-evidence/docker-version.txt
+          docker compose config --quiet
+      - name: Fail fast if the harness is absent
+        run: |
+          test -f scripts/red_team_harness.py || {
+            echo '::error::scripts/red_team_harness.py is missing. Add it from the approved draft before running; the run must never report results it did not execute.'
+            exit 1
+          }
+      - name: Pull disposable images
+        timeout-minutes: 5
+        run: docker compose pull postgres redis opa
+      - name: Build and start the disposable stack
+        timeout-minutes: 12
+        run: docker compose up --build -d --wait --wait-timeout 300
+      - name: Run the red-team harness
+        timeout-minutes: 20
+        run: |
+          python3 scripts/red_team_harness.py \
+            --categories "${{ inputs.categories }}" \
+            --evidence red-team-evidence/red-team-evidence.jsonl
+      - name: Capture stack logs
+        if: always()
+        run: |
+          docker compose ps -a > red-team-evidence/compose-status.txt
+          docker compose logs --no-color --tail 300 > red-team-evidence/compose.log
+      - name: Tear down only this run's disposable stack
+        if: always()
+        timeout-minutes: 3
+        run: docker compose down -v --remove-orphans
+      - name: Retain bounded synthetic evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: acr-red-team-${{ github.run_id }}-${{ github.run_attempt }}
+          path: implementations/acr-control-plane/red-team-evidence/
+          retention-days: 30
