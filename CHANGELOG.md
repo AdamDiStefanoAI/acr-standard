@@ -6,17 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Changed
-
-- Spec clarification (§18): the evidence-record requirements now state the ordering rule explicitly. Where records are sequenced or hash-chained, a decision record's sequence position is assigned when the decision is issued, not when the record is persisted, exported, or received, and each decision record is bound to the action it governed through correlation linkage and sequence position. Ordering by arrival, persistence, or completion time does not satisfy the requirement; asynchronous persistence and export remain permitted provided the assigned order reflects decision issuance. Clarification only: no new fields, no structural change, and the repository specification stays v1.2.0. Reference-implementation conformance is tracked separately.
-
-## [Unreleased]
-
 ### Added
 
 - Installed `acr --version` CLI, offline LangGraph refund example, TypeScript decision-helper tests/example and Python parity inventory, customer-support Rego regression tests, and opt-in parameter PII policy example.
 - Curated external resources and authenticated n8n webhook onboarding with a synthetic protected executor. See the n8n README for the exact validation scope.
 - Safe approval resumption and durable execution receipts from PR #54 (already merged); these remain unreleased until a separate release is made.
+
+### Changed
+
+- Spec clarification (§18): the evidence-record requirements now state the ordering rule explicitly. Where records are sequenced or hash-chained, a decision record's sequence position is assigned when the decision is issued, not when the record is persisted, exported, or received, and each decision record is bound to the action it governed through correlation linkage and sequence position. Ordering by arrival, persistence, or completion time does not satisfy the requirement; asynchronous persistence and export remain permitted provided the assigned order reflects decision issuance. Clarification only: no new fields, no structural change, and the repository specification stays v1.2.0. Reference-implementation conformance is tracked separately.
 
 ### Documentation
 
@@ -77,15 +75,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - GitHub Actions workflow for markdown link checking.
 - Issue templates for bug reports and feature requests.
 - **Adoption and credibility (post-structure):**
-  - ADOPTION.md: maturity levels (1–3), "ACR-aligned" criteria, implementation listing process, badge and citation guidelines.
-  - GOVERNANCE.md: project goals, maintainer role, decision-making, contribution process, working groups (planned).
-  - STRIKE threat model expanded: attack scenarios, likelihood/impact, detection techniques, and detailed ACR control mapping per threat (S–T–R–I–K–E).
-  - NIST AI RMF subcategory-level mapping (Govern, Map, Measure, Manage) with ACR controls and references.
-  - Use cases: concrete scenarios for customer support, incident response, and financial analysis (sample policies, decision flows).
-  - Persona-based Get Started in docs (Architect, Security, Compliance, Implementer, Evaluator) with 3–5 step paths.
-  - Glossary expanded: Control Layer/Pillar, Policy Engine, Telemetry Schema, Kill Switch, Break-Glass, Purpose Binding, STRIKE mnemonic, ACR Maturity Level.
-  - README: "Why ACR?" positioning (OWASP/MITRE-style), adoption and governance links, citation and branding section, implementations section updated with ADOPTION reference.
-  - Pull request template for documentation and spec changes.
+- ADOPTION.md: maturity levels (1–3), "ACR-aligned" criteria, implementation listing process, badge and citation guidelines.
+- GOVERNANCE.md: project goals, maintainer role, decision-making, contribution process, working groups (planned).
+- STRIKE threat model expanded: attack scenarios, likelihood/impact, detection techniques, and detailed ACR control mapping per threat (S-T-R-I-K-E).
+- NIST AI RMF subcategory-level mapping (Govern, Map, Measure, Manage) with ACR controls and references.
+- Use cases: concrete scenarios for customer support, incident response, and financial analysis (sample policies, decision flows).
+- Persona-based Get Started in docs (Architect, Security, Compliance, Implementer, Evaluator) with 3–5 step paths.
+- Glossary expanded: Control Layer/Pillar, Policy Engine, Telemetry Schema, Kill Switch, Break-Glass, Purpose Binding, STRIKE mnemonic, ACR Maturity Level.
+- README: "Why ACR?" positioning (OWASP/MITRE-style), adoption and governance links, citation and branding section, implementations section updated with ADOPTION reference.
+- Pull request template for documentation and spec changes.
 
 [1.3.1]: https://github.com/AdamDiStefanoAI/acr-standard/releases/tag/v1.3.1
 
