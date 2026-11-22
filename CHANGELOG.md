@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-22
+
 ### Added
 
 - Installed `acr --version` CLI, offline LangGraph refund example, TypeScript decision-helper tests/example and Python parity inventory, customer-support Rego regression tests, and opt-in parameter PII policy example.
