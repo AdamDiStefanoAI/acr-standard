@@ -91,9 +91,7 @@ class TestDecisionRecording:
     ) -> None:
         deny_result = PolicyEvaluationResult(
             final_decision="deny",
-            decisions=[
-                PolicyDecision(policy_id="acr-deny-0", decision="deny", reason="blocked")
-            ],
+            decisions=[PolicyDecision(policy_id="acr-deny-0", decision="deny", reason="blocked")],
             reason="blocked",
             latency_ms=3,
         )
