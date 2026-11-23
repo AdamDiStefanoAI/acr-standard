@@ -20,12 +20,20 @@
 #   Disposable stack only, synthetic data only, demo credentials only.
 #   No production, hosted service, or anyone else's deployment. No code
 #   changes, branches, merges, pushes, or PRs from the run itself.
-#   Categories are run via the harness; only category 1 (content-guardrail
-#   evasion, post-fix) is implemented in the companion harness draft.
-#   Requesting any other category today exits non-zero with
-#   "not implemented" — a category that did not run is never a pass.
-#   Default input is "1" for exactly that reason; change it only when the
-#   harness implements the category you ask for.
+#   Categories are run via the harness, which implements categories
+#   1-11 (the approved plan's categories 1-10 plus the MCP gateway
+#   category at 11). Requesting an unimplemented category exits
+#   non-zero with "not implemented" — a category that did not run is
+#   never a pass. Category 11 additionally needs its MCP env vars and
+#   category 10 needs the degraded stage below, so neither runs in
+#   this job; the default input stays "1".
+#
+#   The second job (red-team-degraded) runs category 10 (fail-open)
+#   only: it boots the same disposable stack, verifies it healthy,
+#   stops the OPA service, confirms readiness now reports the outage,
+#   and runs the harness with REDTEAM_DEGRADED=1. On failure the safe
+#   answer must be deny: no evaluation may allow and nothing may
+#   execute while the policy engine is down.
 
 name: ACR red-team (disposable, manual only)
 on:
@@ -102,4 +110,96 @@ jobs:
         with:
           name: acr-red-team-${{ github.run_id }}-${{ github.run_attempt }}
           path: implementations/acr-control-plane/red-team-evidence/
+          retention-days: 30
+
+  red-team-degraded:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: implementations/acr-control-plane
+    env:
+      COMPOSE_PROJECT_NAME: acr-redteam-degraded-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_FILE: docker-compose.yml:docker-compose.full-stack-test.yml
+      OPERATOR_API_KEYS_JSON: '{"ci-operator-only":{"subject":"ci-operator","roles":["agent_admin","approver","security_admin","auditor","killswitch_operator"]}}'
+      SERVICE_OPERATOR_API_KEY: ci-operator-only
+      EXECUTOR_HMAC_SECRET: ci-execution-only-not-a-production-secret-123456789
+      EXECUTOR_CREDENTIAL_SECRET: ci-brokered-only-not-a-production-secret-987654321
+      JWT_SECRET_KEY: ci-jwt-only-not-a-production-secret-123456789012345
+      KILLSWITCH_SECRET: ci-kill-only-not-a-production-secret-12345678901234
+      ACR_ENV: development
+      OPERATOR_API_KEY: "ci-operator-only"
+      REDTEAM_DEGRADED: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record revision and runtime
+        run: |
+          mkdir -p red-team-evidence-degraded
+          git rev-parse HEAD > red-team-evidence-degraded/revision.txt
+          git log -1 --format='%H %ci %s' >> red-team-evidence-degraded/revision.txt
+          docker version > red-team-evidence-degraded/docker-version.txt
+          docker compose version >> red-team-evidence-degraded/docker-version.txt
+          docker compose config --quiet
+      - name: Fail fast if the harness is absent
+        run: |
+          test -f scripts/red_team_harness.py || {
+            echo '::error::scripts/red_team_harness.py is missing. Add it from the approved draft before running; the run must never report results it did not execute.'
+            exit 1
+          }
+      - name: Pull disposable images
+        timeout-minutes: 5
+        run: docker compose pull postgres redis opa
+      - name: Build and start the disposable stack
+        timeout-minutes: 12
+        run: docker compose up --build -d --wait --wait-timeout 300
+      - name: Wait for the healthy stack
+        timeout-minutes: 3
+        run: |
+          for i in $(seq 1 24); do
+            if curl -fsS http://127.0.0.1:8000/acr/ready > /dev/null; then
+              echo "stack healthy"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo '::error::stack never became ready; cannot degrade a stack that was never healthy.'
+          exit 1
+      - name: Stop OPA (degrade the stack)
+        timeout-minutes: 3
+        run: |
+          docker compose stop opa
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/acr/ready || true)
+            if [ "$code" = "503" ]; then
+              echo "readiness reports the outage (503); stack is degraded"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo '::error::readiness never reported the OPA outage; the degraded precondition does not hold.'
+          exit 1
+      - name: Run the red-team harness (category 10, degraded stack)
+        timeout-minutes: 20
+        run: |
+          python3 scripts/red_team_harness.py \
+            --categories "10" \
+            --evidence red-team-evidence-degraded/red-team-evidence.jsonl
+      - name: Capture stack logs
+        if: always()
+        run: |
+          docker compose ps -a > red-team-evidence-degraded/compose-status.txt
+          docker compose logs --no-color --tail 300 > red-team-evidence-degraded/compose.log
+      - name: Tear down only this run's disposable stack
+        if: always()
+        timeout-minutes: 3
+        run: docker compose down -v --remove-orphans
+      - name: Retain bounded synthetic evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: acr-red-team-degraded-${{ github.run_id }}-${{ github.run_attempt }}
+          path: implementations/acr-control-plane/red-team-evidence-degraded/
           retention-days: 30
