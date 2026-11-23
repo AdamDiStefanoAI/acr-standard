@@ -9,6 +9,8 @@ resources:
 - gateway-service.yaml
 - killswitch-deployment.yaml
 - killswitch-service.yaml
+- mcp-gateway-deployment.yaml
+- mcp-gateway-service.yaml
 - networkpolicy.yaml
 - pdbs.yaml
 - hpas.yaml

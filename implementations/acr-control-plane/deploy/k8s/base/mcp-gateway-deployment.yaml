@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acr-mcp-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: acr-mcp-gateway
+  template:
+    metadata:
+      labels:
+        app: acr-mcp-gateway
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: acr-mcp-gateway
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: mcp-gateway
+          image: acr-mcp-gateway:1.5.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            # One gateway instance fronts exactly one upstream MCP
+            # server. The upstream must be reachable ONLY through this
+            # service (network placement); see docs/mcp-gateway.md.
+            - name: MCP_GATEWAY_UPSTREAM_URL
+              value: "http://mcp-server.internal:9000/mcp"
+            - name: MCP_GATEWAY_UPSTREAM_ID
+              value: "mcp-server.internal"
+            - name: MCP_GATEWAY_AGENT_ID
+              value: "acr-mcp-gateway"
+            - name: ACR_GATEWAY_URL
+              value: "http://acr-gateway:8000"
+            - name: MCP_GATEWAY_OPERATOR_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: acr-gateway-secret
+                  key: SERVICE_OPERATOR_API_KEY
+            - name: ACR_ENV
+              value: "production"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            failureThreshold: 24
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+          - name: tmp
+            mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}

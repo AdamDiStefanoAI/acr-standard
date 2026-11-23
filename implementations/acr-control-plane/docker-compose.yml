@@ -217,6 +217,48 @@ services:
           cpus: "0.25"
           memory: 256M
 
+  # ── ACR MCP Gateway (v1.5.0 WS5, opt-in profile) ──
+  # Policy-enforcing proxy in front of ONE upstream MCP server. It is
+  # profile-gated because the upstream is deployment-specific: enable
+  # with `docker compose --profile mcp-gateway up` and
+  # MCP_GATEWAY_UPSTREAM_URL set. The upstream must be reachable ONLY
+  # through this service — see docs/mcp-gateway.md.
+  acr-mcp-gateway:
+    profiles: ["mcp-gateway"]
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      MCP_GATEWAY_UPSTREAM_URL: ${MCP_GATEWAY_UPSTREAM_URL:?Set the upstream MCP server URL}
+      MCP_GATEWAY_UPSTREAM_ID: ${MCP_GATEWAY_UPSTREAM_ID:-}
+      MCP_GATEWAY_AGENT_ID: ${MCP_GATEWAY_AGENT_ID:-acr-mcp-gateway}
+      ACR_GATEWAY_URL: http://acr-gateway:8000
+      MCP_GATEWAY_OPERATOR_API_KEY: ${SERVICE_OPERATOR_API_KEY}
+      MCP_GATEWAY_MAX_RESPONSE_BYTES: ${MCP_GATEWAY_MAX_RESPONSE_BYTES:-1048576}
+      MCP_GATEWAY_TOOL_PINNING: ${MCP_GATEWAY_TOOL_PINNING:-enforce}
+      ACR_ENV: ${ACR_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      WEB_CONCURRENCY: ${MCP_GATEWAY_WORKERS:-2}
+    depends_on:
+      acr-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+
 volumes:
   managed_policy:
   postgres_data:

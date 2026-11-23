@@ -79,7 +79,11 @@ dev = [
     "ruff>=0.4.0,<1.0.0",
 ]
 integrations = [
-    "langchain-core>=0.3.0,<1.0.0",
+    # Verified 2026-11-23 (v1.5.0 WS5) against langchain-core 1.8.4 /
+    # langgraph 1.2.24: full guard test matrix green and pip-audit clean.
+    # The pre-1.0 family this pin previously targeted is no longer the
+    # current LangChain release line.
+    "langchain-core>=1.0.0,<2.0.0",
 ]
 
 [tool.hatch.version]

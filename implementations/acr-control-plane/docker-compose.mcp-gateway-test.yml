@@ -1,0 +1,25 @@
+# MCP gateway validation only: the real gateway plus a fixture MCP
+# server, wired so the proxy fronts the fixture. Requires Compose
+# >=2.24.4. Combine with docker-compose.yml (and, for red-team
+# category 3, docker-compose.full-stack-test.yml):
+#   docker compose -f docker-compose.yml \
+#     -f docker-compose.full-stack-test.yml \
+#     -f docker-compose.mcp-gateway-test.yml --profile mcp-gateway up
+services:
+  mcp-fixture:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp-gateway
+    command: ["python", "scripts/fixture_mcp_server.py", "--port", "9000"]
+    ports: !reset []
+    environment:
+      ACR_ENV: test
+  acr-mcp-gateway:
+    ports: !override ["127.0.0.1:8080:8080"]
+    environment:
+      MCP_GATEWAY_UPSTREAM_URL: http://mcp-fixture:9000/mcp
+      MCP_GATEWAY_UPSTREAM_ID: fixture-server
+      MCP_GATEWAY_AGENT_ID: acr-mcp-gateway
+    depends_on:
+      mcp-fixture:
+        condition: service_started
