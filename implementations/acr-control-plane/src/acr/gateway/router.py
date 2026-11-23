@@ -173,6 +173,7 @@ async def _record_policy_decisions(
     correlation_id: str,
     tool_name: str,
     decisions: list[dict],
+    enforcement_mode: str = "enforce",
 ) -> int:
     """Durably record one evaluation's policy decisions before responding.
 
@@ -195,6 +196,7 @@ async def _record_policy_decisions(
                         agent_id=agent_id,
                         policy_id=str(item["policy_id"]),
                         decision=str(item["decision"]),
+                        enforcement_mode=enforcement_mode,
                         reason=item.get("reason"),
                         tool_name=tool_name,
                         latency_ms=item.get("latency_ms"),
@@ -335,6 +337,10 @@ async def evaluate(
         # graduated.py when an agent's drift score crosses a tier threshold.
         # Containment state is a control input: when it cannot be read, the
         # evaluation fails closed rather than proceeding uncontained.
+        # Containment (and the kill switch above) is EXEMPT from observe
+        # mode: these checks run before the agent's enforcement mode is
+        # read and return on their own, so an observe-mode agent under
+        # restrict/isolate/kill is contained exactly as an enforcing one.
         redis = get_redis_or_none()
         if redis is None and runtime_dependencies_fail_closed():
             raise RuntimeControlDependencyError(
@@ -388,6 +394,15 @@ async def evaluate(
             await validate_agent_identity(db, req.agent_id)
             manifest = await get_manifest(db, req.agent_id)
             identity_ms = int((time.monotonic() - t0) * 1000)
+
+        # Enforcement mode (v1.5.0 WS1) comes ONLY from the stored agent
+        # record, via the manifest. Nothing in the request — headers, body
+        # fields, context, parameters, tool names — can influence it; there
+        # is deliberately no code path that reads a mode from `req`. The
+        # only write paths are registration and the operator-only
+        # enforcement-mode transition endpoint.
+        enforcement_mode = manifest.enforcement_mode
+        observe = enforcement_mode == "observe"
 
         # ── [3] Server-side rate limit counter ────────────────────────────────
         # Override self-reported count with the authoritative server-side value.
@@ -503,6 +518,7 @@ async def evaluate(
                 correlation_id=correlation_id,
                 tool_name=effective_action["tool_name"],
                 decisions=[d.model_dump(mode="json") for d in response_decisions],
+                enforcement_mode=enforcement_mode,
             )
         except Exception as exc:
             await db.rollback()
@@ -524,7 +540,10 @@ async def evaluate(
             )
 
         # ── [7] Escalate → approval queue ─────────────────────────────────────
-        if response_decision == "escalate":
+        # Enforce mode only: in observe mode a would-be escalation is
+        # recorded (step [6]) and the call proceeds via step [9] — no
+        # approval request is created for a call nobody is gating.
+        if response_decision == "escalate" and not observe:
             authorization_snapshot = None
             if policy_result.policy_identity is not None:
                 expected = await resumption.expected_policy_identity(db)
@@ -569,6 +588,7 @@ async def evaluate(
                     "telemetry_policies": telemetry_policies,
                     "output_decision": "escalate",
                     "output_reason": response_reason,
+                    "enforcement_mode": enforcement_mode,
                     "approval_request_id": approval.request_id,
                     "drift_score": drift_score,
                     "output_filtered": filter_result.was_modified,
@@ -591,6 +611,8 @@ async def evaluate(
                 content={
                     "decision": "escalate",
                     "correlation_id": correlation_id,
+                    "enforcement_mode": enforcement_mode,
+                    "enforced": True,
                     "approval_request_id": approval.request_id,
                     "reason": response_reason,
                     "approval_queue": approval.approval_queue,
@@ -599,7 +621,8 @@ async def evaluate(
             )
 
         # ── [8] Deny ──────────────────────────────────────────────────────────
-        if response_decision == "deny":
+        # Enforce mode only: an observe-mode would-be deny proceeds via [9].
+        if response_decision == "deny" and not observe:
             _queue_background_tasks(
                 background_tasks,
                 agent_id=req.agent_id,
@@ -621,6 +644,7 @@ async def evaluate(
                     "telemetry_policies": telemetry_policies,
                     "output_decision": "deny",
                     "output_reason": response_reason,
+                    "enforcement_mode": enforcement_mode,
                     "approval_request_id": None,
                     "drift_score": drift_score,
                     "output_filtered": filter_result.was_modified,
@@ -643,6 +667,8 @@ async def evaluate(
                 content={
                     "decision": "deny",
                     "correlation_id": correlation_id,
+                    "enforcement_mode": enforcement_mode,
+                    "enforced": True,
                     "reason": response_reason,
                     "policy_decisions": [
                         {"policy_id": d.policy_id, "decision": d.decision, "reason": d.reason}
@@ -651,16 +677,41 @@ async def evaluate(
                 },
             )
 
-        # ── [9] Allow / Modify ────────────────────────────────────────────────
+        # ── [9] Allow / Modify — and, in observe mode, every outcome ─────────
+        # Observe mode reaches this block for ALL would-be outcomes: the
+        # decision was recorded at step [6] with the same §18 semantics as
+        # an enforced one, and the call now proceeds. Arriving here does
+        # NOT bypass containment or the kill switch — those run at steps
+        # [1]/[1b], before mode is read, and return on their own.
+        #
+        # What runs in observe mode is the agent's requested action. A
+        # policy "modify" verdict must not silently change behavior while
+        # merely observing, so for a would-be modify the requested action
+        # proceeds with only the standing output-filter redaction applied
+        # to its parameters (the filter is a data control, not enforcement,
+        # and applies in both modes).
+        run_tool_name = effective_action["tool_name"]
+        run_parameters = effective_action["parameters"]
+        run_description = effective_action.get("description")
+        if observe and policy_result.final_decision == "modify":
+            requested_filter = filter_parameters(
+                req.action.tool_name,
+                req.action.parameters or {},
+                correlation_id,
+            )
+            run_tool_name = req.action.tool_name
+            run_parameters = requested_filter.parameters
+            run_description = req.action.description
+
         execution_result = None
         if settings.execute_allowed_actions:
             await _adjust_authoritative_spend(req.agent_id, estimated_action_cost_usd)
             try:
                 execution_result = await execute_action(
                     agent_id=req.agent_id,
-                    tool_name=effective_action["tool_name"],
-                    parameters=effective_action["parameters"],
-                    description=effective_action.get("description"),
+                    tool_name=run_tool_name,
+                    parameters=run_parameters,
+                    description=run_description,
                     correlation_id=correlation_id,
                 )
             except Exception:
@@ -671,16 +722,16 @@ async def evaluate(
         _queue_background_tasks(
             background_tasks,
             agent_id=req.agent_id,
-            tool_name=effective_action["tool_name"],
-            policy_denied=False,
+            tool_name=run_tool_name,
+            policy_denied=response_decision == "deny",
             total_ms=total_ms,
             correlation_id=correlation_id,
             event_kwargs={
-                "event_type": "ai_inference",
+                "event_type": "policy_decision" if response_decision == "deny" else "ai_inference",
                 "manifest": manifest,
                 "correlation_id": correlation_id,
                 "req": req,
-                "filtered_params": effective_action["parameters"],
+                "filtered_params": run_parameters,
                 "start_time": start_time,
                 "end_time": end_time,
                 "total_ms": total_ms,
@@ -689,15 +740,16 @@ async def evaluate(
                 "telemetry_policies": telemetry_policies,
                 "output_decision": response_decision,
                 "output_reason": response_reason,
+                "enforcement_mode": enforcement_mode,
                 "approval_request_id": None,
                 "drift_score": drift_score,
                 "output_filtered": filter_result.was_modified,
                 "filter_reason": _filter_reason(filter_result),
                 "modified_parameters": effective_action["parameters"]
-                if response_decision == "modify"
+                if response_decision == "modify" and not observe
                 else None,
-                "tool_name": effective_action["tool_name"],
-                "description": effective_action.get("description"),
+                "tool_name": run_tool_name,
+                "description": run_description,
                 "custom": {
                     "estimated_cost_usd": estimated_action_cost_usd,
                     "authoritative_hourly_spend_usd": projected_hourly_spend_usd,
@@ -706,9 +758,37 @@ async def evaluate(
                 },
             },
         )
+        if observe:
+            # Non-blocking by construction: HTTP 200 and decision "allow"
+            # (the effective outcome), with the would-be decision carried
+            # explicitly so callers and the SDK can log what enforcement
+            # would have done. No approval is created and no modified
+            # action is substituted.
+            content = {
+                "decision": "allow",
+                "correlation_id": correlation_id,
+                "enforcement_mode": "observe",
+                "would_be_decision": response_decision,
+                "enforced": False,
+                "policy_decisions": [
+                    {"policy_id": d.policy_id, "decision": d.decision, "reason": d.reason}
+                    for d in response_decisions
+                ],
+                "drift_score": drift_score,
+                "latency_ms": total_ms,
+                "estimated_cost_usd": estimated_action_cost_usd,
+                "authoritative_hourly_spend_usd": projected_hourly_spend_usd,
+            }
+            if response_reason:
+                content["reason"] = response_reason
+            if execution_result is not None:
+                content["execution_result"] = execution_result
+            return JSONResponse(status_code=200, content=content)
         content = {
             "decision": response_decision,
             "correlation_id": correlation_id,
+            "enforcement_mode": enforcement_mode,
+            "enforced": True,
             "policy_decisions": [
                 {"policy_id": d.policy_id, "decision": d.decision, "reason": d.reason}
                 for d in response_decisions
@@ -831,6 +911,7 @@ async def _emit_telemetry_event(
     output_reason,
     approval_request_id,
     drift_score,
+    enforcement_mode="enforce",
     output_filtered=False,
     filter_reason=None,
     modified_parameters=None,
@@ -859,6 +940,7 @@ async def _emit_telemetry_event(
         policies=telemetry_policies,
         output_decision=output_decision,
         output_reason=output_reason,
+        enforcement_mode=enforcement_mode,
         approval_request_id=approval_request_id,
         drift_score=drift_score,
         output_filtered=output_filtered,

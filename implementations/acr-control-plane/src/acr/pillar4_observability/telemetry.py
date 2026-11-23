@@ -52,6 +52,7 @@ def build_event(
     output_reason: str | None,
     approval_request_id: str | None,
     drift_score: float | None,
+    enforcement_mode: str = "enforce",
     output_filtered: bool = False,
     filter_reason: str | None = None,
     modified_parameters: dict | None = None,
@@ -87,6 +88,7 @@ def build_event(
             filtered=output_filtered,
             filter_reason=filter_reason,
             modified_parameters=modified_parameters,
+            enforcement_mode=enforcement_mode,  # type: ignore[arg-type]
         ),
         metadata=TelemetryMetadata(
             environment=settings.acr_env,

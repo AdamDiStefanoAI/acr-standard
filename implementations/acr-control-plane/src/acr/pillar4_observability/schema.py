@@ -69,6 +69,13 @@ class OutputObject(BaseModel):
     filtered: bool = False
     filter_reason: str | None = None
     modified_parameters: dict[str, Any] | None = None
+    # Enforcement mode the decision was issued under (v1.5.0 WS1). For
+    # `observe` events, `decision` is the would-be decision — what the
+    # policy stack decided while the call itself proceeded. Consumers
+    # must key on this field to separate observed from enforced verdicts.
+    # Defaults to `enforce` so events written before the field existed
+    # (and non-gateway event producers) remain valid.
+    enforcement_mode: Literal["enforce", "observe"] = "enforce"
 
 
 class AcrControlPlaneMetadata(BaseModel):

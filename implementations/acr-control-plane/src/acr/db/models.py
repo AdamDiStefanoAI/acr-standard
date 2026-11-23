@@ -38,6 +38,10 @@ class AgentRecord(Base):
             "health_status IN ('unknown', 'healthy', 'degraded', 'unhealthy')",
             name="ck_agents_health_status",
         ),
+        CheckConstraint(
+            "enforcement_mode IN ('enforce', 'observe')",
+            name="ck_agents_enforcement_mode",
+        ),
         Index("ix_agents_parent_agent_id", "parent_agent_id"),
         Index("ix_agents_lifecycle_state", "lifecycle_state"),
     )
@@ -72,6 +76,13 @@ class AgentRecord(Base):
     # Health observability. Updated by heartbeat endpoint and the periodic
     # health sweep loop in main.py.
     health_status: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown")
+    # Enforcement mode (v1.5.0 WS1, migration 0016): `enforce` applies policy
+    # decisions to the call; `observe` records the would-be decision with the
+    # same synchronous evidence semantics and lets the call proceed. Mode is
+    # operator-controlled state: it lives only on this stored record, is read
+    # by the gateway from here, and changes only via the dedicated
+    # enforcement-mode transition endpoint — never from a request.
+    enforcement_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="enforce")
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -99,6 +110,16 @@ class PolicyDecisionRecord(Base):
             "decision IN ('allow', 'deny', 'modify', 'escalate')",
             name="ck_policy_decisions_decision",
         ),
+        CheckConstraint(
+            "enforcement_mode IN ('enforce', 'observe')",
+            name="ck_policy_decisions_enforcement_mode",
+        ),
+        Index(
+            "ix_policy_decisions_observe_report",
+            "agent_id",
+            "enforcement_mode",
+            "created_at",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
@@ -110,6 +131,11 @@ class PolicyDecisionRecord(Base):
     decision: Mapped[str] = mapped_column(
         String(16), nullable=False
     )  # allow | deny | modify | escalate
+    # The enforcement mode the decision was issued under (migration 0016).
+    # For `observe` rows, `decision` is the would-be decision: what the
+    # policy stack decided, recorded with full §18 semantics, while the
+    # call itself proceeded. Reports must never mix the two modes.
+    enforcement_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="enforce")
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     tool_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)

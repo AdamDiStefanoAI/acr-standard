@@ -37,6 +37,14 @@ class EvaluateResponse(BaseModel):
     correlation_id: str | None = None
     reason: str | None = None
     error_code: str | None = None
+    # Enforcement mode the evaluation ran under (v1.5.0 WS1). In `observe`
+    # mode `decision` is the effective outcome (the call proceeds, so
+    # "allow") and `would_be_decision` carries what the policy stack
+    # decided; `enforced` is False. In `enforce` mode `would_be_decision`
+    # is None and `enforced` is True.
+    enforcement_mode: Literal["enforce", "observe"] | None = None
+    would_be_decision: DecisionLiteral | None = None
+    enforced: bool | None = None
     approval_request_id: str | None = None
     approval_queue: str | None = None
     sla_minutes: int | None = None
