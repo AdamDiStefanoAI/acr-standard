@@ -730,3 +730,15 @@ class TestEvidencePackage:
         assert result["file_count"] > 5
         verify = _verify(out)
         assert verify.returncode == 0, verify.stderr
+
+
+def test_packaged_control_mapping_matches_docs_source():
+    """The packaged copy under src/acr/_compliance must stay byte-identical
+    to docs/compliance/control-mapping.md (the human-edited source of truth);
+    the Docker build only ships src/, so the package carries its own copy."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    doc = (root / "docs" / "compliance" / "control-mapping.md").read_bytes()
+    packaged = (root / "src" / "acr" / "_compliance" / "control-mapping.md").read_bytes()
+    assert doc == packaged
