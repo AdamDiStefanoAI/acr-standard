@@ -2,6 +2,16 @@
 # Controlled local Compose upgrade/rollback. Set ACR_GATEWAY_IMAGE to an immutable
 # reviewed release image/digest. Does not delete DB/Redis or operator policies.
 set -eu
+# Git Bash/MSYS2 rewrites POSIX-looking arguments into Windows paths when a
+# shell launches a native executable such as docker.exe. Every argument this
+# script passes to Docker is a container path (/preflight, /operator-policies)
+# or an identifier that must arrive verbatim; the rewrite corrupts the volume
+# mount specs and makes the export preflight check below unreachable (its
+# /preflight argument never matches), so the upgrade would proceed past a
+# failed preflight instead of refusing. Opt out of the rewrite for everything
+# this script launches. These variables are inert outside MSYS2 shells.
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL='*'
 : "${ACR_GATEWAY_IMAGE:?Set the exact reviewed gateway image or digest}"
 : "${SERVICE_OPERATOR_API_KEY:?Set an existing auditor-authorized operator key}"
 : "${OPERATOR_API_KEYS_JSON:?Configure the same operator key with auditor privileges}"

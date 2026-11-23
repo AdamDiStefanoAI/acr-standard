@@ -57,6 +57,22 @@ def managed_core_files() -> dict[str, bytes]:
     return result
 
 
+def _same_file(first: Path, second: Path) -> bool:
+    """Whether two paths name the same filesystem object.
+
+    Stat identity (device + inode/file index) is compared instead of resolved
+    path strings: on Windows, Path.resolve() can return different string forms
+    for the same file reached directly and through the Kubernetes projection
+    symlink chain (extended-length prefixes, short names), which made the
+    backing-file mapping check in extension_files() report a verified backing
+    copy as unmapped on Windows while the same layout passed on Linux.
+    """
+    try:
+        return os.path.samefile(first, second)
+    except OSError:
+        return first.resolve() == second.resolve()
+
+
 def validate_extension(source: str, *, name: str) -> None:
     if _RESERVED.search(source):
         raise ValueError(f"Extension {name} uses reserved core identity names")
@@ -70,7 +86,11 @@ def validate_extension(source: str, *, name: str) -> None:
 def extension_files(directory: str | Path | None) -> dict[str, bytes]:
     if directory is None:
         return {}
-    root = Path(directory)
+    # Lexically normalize the root as given (unified separators, no dot
+    # segments) so the relative-path classification below is computed from the
+    # same canonical form on every platform; entry paths come from rglob over
+    # this root, so they inherit the normalization.
+    root = Path(os.path.normpath(directory))
     if not root.is_dir():
         raise ValueError(f"Extension directory does not exist: {root}")
     sources = core_sources()
@@ -122,7 +142,7 @@ def extension_files(directory: str | Path | None) -> dict[str, bytes]:
             )
         if is_backing:
             visible = root.joinpath(*relative.parts[1:])
-            if not visible.is_file() or visible.resolve() != path.resolve():
+            if not visible.is_file() or not _same_file(visible, path):
                 raise ValueError(f"Unmapped Kubernetes policy backing file: {path}")
             continue  # Only the verified backing copy of a visible file is deduplicated.
         payload = path.read_bytes()
