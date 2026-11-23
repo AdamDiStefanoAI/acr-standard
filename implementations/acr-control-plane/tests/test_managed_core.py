@@ -667,7 +667,18 @@ def _patch_windows_projection_chain(monkeypatch, *, data_target="..2026"):
     fakes give the manual chain expander a two-hop chain to walk (visible
     file -> ..data -> timestamped backing directory); any path outside the
     table behaves as it does on the real filesystem.
+
+    Table keys and lookups are compared in separator-normalized form: on
+    Windows the expander looks prefixes up as str(WindowsPath), which
+    spells them with backslashes, so keying the table by the forward-slash
+    spellings alone meant the fakes never matched there and the expander
+    saw no links at all (the round-3 CI failure of these mocked tests,
+    which passed on Linux where str(Path) uses forward slashes).
     """
+
+    def key(path):
+        return str(path).replace("\\", "/")
+
     links = {
         "C:/mount/custom.rego": "..data/custom.rego",
         "C:/mount/..data": data_target,
@@ -675,11 +686,11 @@ def _patch_windows_projection_chain(monkeypatch, *, data_target="..2026"):
     real_islink = os.path.islink
 
     def fake_islink(path):
-        return str(path) in links or real_islink(path)
+        return key(path) in links or real_islink(path)
 
     def fake_readlink(path):
         try:
-            return links[str(path)]
+            return links[key(path)]
         except KeyError:
             raise OSError("not a simulated link") from None
 
@@ -716,3 +727,42 @@ def test_same_file_rejects_a_chain_terminating_at_a_different_file(monkeypatch):
     _patch_windows_projection_chain(monkeypatch, data_target="..2027")
     monkeypatch.setattr(os.path, "samefile", _stat_unavailable)
     assert not _same_file(Path("C:/mount/custom.rego"), Path("C:/mount/..2026/custom.rego"))
+
+
+def test_windows_projection_chain_table_matches_backslash_spellings(monkeypatch):
+    # On Windows the chain expander looks prefixes up as str(WindowsPath),
+    # spelled with backslashes; the simulated link table must match those
+    # spellings, not only the forward-slash forms it is defined with. From
+    # Linux the backslash spellings are fed through the fakes directly.
+    _patch_windows_projection_chain(monkeypatch)
+    assert os.path.islink(r"C:\mount\custom.rego")
+    assert os.path.islink(r"C:\mount\..data")
+    assert os.readlink(r"C:\mount\custom.rego") == "..data/custom.rego"
+    assert os.readlink(r"C:\mount\..data") == "..2026"
+    with pytest.raises(OSError):
+        os.readlink(r"C:\mount\..2026")
+
+
+def test_projection_survives_visible_entry_stat_failure(tmp_path, monkeypatch):
+    # Simulate the Windows failure mode where stat on the visible symlink
+    # as presented reports "not a file" (its target chain passes through
+    # the ..data directory symlink) even though the file it denotes is a
+    # regular file: classification is decided on the fully expanded path,
+    # so the projected layout is still accepted instead of refused as an
+    # unsupported entry.
+    root = tmp_path / "mount"
+    backing = root / "..2026"
+    backing.mkdir(parents=True)
+    (backing / "custom.rego").write_text('package acr\ndeny contains "custom" if { true }')
+    (root / "..data").symlink_to("..2026", target_is_directory=True)
+    visible = root / "custom.rego"
+    visible.symlink_to("..data/custom.rego")
+    real_is_file = Path.is_file
+
+    def flaky_is_file(self):
+        if self == visible:
+            return False
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", flaky_is_file)
+    assert list(extension_files(root)) == ["bundle/extensions/custom.rego"]

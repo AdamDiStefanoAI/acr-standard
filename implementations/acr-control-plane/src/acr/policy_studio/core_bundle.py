@@ -207,11 +207,24 @@ def extension_files(directory: str | Path | None) -> dict[str, bytes]:
             )
             if path != root / "..data" and not recognized_backing:
                 raise ValueError(f"Unrecognized hidden operator policy entry: {path}")
-        if path.is_dir():
+        # Classification follows the projection chain to the entry's real
+        # location. "Is this a directory / a regular file" is a question
+        # about the file the entry denotes, so it is asked of the fully
+        # expanded path: stat on the entry as presented can fail on Windows
+        # for a legitimate projected entry (a visible file symlink whose
+        # target passes through the ..data directory symlink), which would
+        # refuse the entry before the checks below ever run. Predicates
+        # about the entry as presented stay on the raw path: the escape
+        # check above (the resolved chain must not leave the root), the
+        # hidden-entry classification, and the is_symlink checks that
+        # detect the links themselves. The payload is likewise read from
+        # the expanded location, the same file by construction.
+        expanded = _expand_symlink_chain(path)
+        if expanded.is_dir():
             if path.is_symlink() and not (projected and path == root / "..data"):
                 raise ValueError(f"Policy directory symlink is not supported: {path}")
             continue
-        if not path.is_file():
+        if not expanded.is_file():
             raise ValueError(f"Unsupported operator policy entry: {path}")
         if path.name == ".gitkeep":
             continue
@@ -243,7 +256,7 @@ def extension_files(directory: str | Path | None) -> dict[str, bytes]:
                     f"{_canonical_path(path)!r})"
                 )
             continue  # Only the verified backing copy of a visible file is deduplicated.
-        payload = path.read_bytes()
+        payload = expanded.read_bytes()
         if path.name in CORE_FILES:
             if payload != sources[path.name]:
                 raise ValueError(
