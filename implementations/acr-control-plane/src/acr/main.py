@@ -145,7 +145,8 @@ async def _evaluation_input_purge_loop() -> None:
 async def _integration_outbox_loop() -> None:
     """Drain the integration outbox (v1.5.0 WS4).
 
-    Delivers Slack/Teams/ServiceNow/Sentinel events asynchronously with
+    Delivers Slack/Teams/ServiceNow/Sentinel/Splunk/syslog events
+    asynchronously with
     retry, backoff, and dead-lettering; every attempt is recorded. A
     no-op while every integration is disabled (the outbox stays empty).
     Delivery problems surface here and in the outbox rows — never in
