@@ -1,5 +1,20 @@
-# Compile published/exported Rego with the same supported OPA as the runtime sidecar.
-FROM openpolicyagent/opa:0.70.0 AS policy-compiler
+# Fetch the official OPA static binary for the TARGET architecture.
+# This stage previously copied /opa out of the openpolicyagent/opa
+# image, which bakes in that image's architecture: on an arm64 build
+# (e.g. Apple Silicon) the image shipped an x86-64 binary that cannot
+# execute in the arm64 runtime image, so the policy export died before
+# the stack could start. The per-arch static binary keeps amd64 builds
+# identical and makes arm64 builds work. The runtime version check in
+# acr.policy_studio.compiler (requires "Version: 0.70.0") remains the
+# guard against a wrong binary.
+FROM python:3.12-slim AS policy-compiler
+ARG TARGETARCH
+ARG OPA_VERSION=0.70.0
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL -o /opa "https://openpolicyagent.org/downloads/v${OPA_VERSION}/opa_linux_${TARGETARCH:-amd64}_static" \
+    && chmod +x /opa \
+    && /opa version
 
 # Stage 1: build
 FROM python:3.12-slim AS builder

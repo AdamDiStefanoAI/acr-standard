@@ -36,3 +36,41 @@ data:
     {"issue_refund":{"provider":"refund_api","url":"https://refunds.internal/api/refunds","api_key":"env:FINANCE_EXECUTOR_API_KEY","default_currency":"USD"},
      "send_email":{"provider":"email_api","url":"https://messaging.internal/api/send","api_key":"env:EMAIL_EXECUTOR_API_KEY","from_address":"ops@example.com"},
      "create_ticket":{"provider":"ticket_api","url":"https://tickets.internal/api/tickets","api_key":"env:TICKET_EXECUTOR_API_KEY","default_queue":"operations"}}
+  # ── Integrations (v1.5.0 WS4): all OFF by default ──
+  # Enable one integration at a time and fill in its settings; the
+  # secret-valued keys (bot tokens, signing secrets, passwords) live in
+  # the gateway Secret — see gateway-secret.example.yaml.
+  INTEGRATIONS_OUTBOX_POLL_SECONDS: "5"
+  INTEGRATIONS_OUTBOX_MAX_ATTEMPTS: "5"
+  INTEGRATIONS_OUTBOX_BACKOFF_BASE_SECONDS: "30"
+  SLACK_ENABLED: "false"
+  SLACK_APPROVALS_CHANNEL: ""
+  SLACK_ALERTS_CHANNEL: ""
+  SLACK_APPROVER_MAP_JSON: ""
+  TEAMS_ENABLED: "false"
+  TEAMS_WEBHOOK_URL: ""
+  TEAMS_CALLBACK_BASE_URL: ""
+  TEAMS_APPROVER_MAP_JSON: ""
+  SERVICENOW_ENABLED: "false"
+  SERVICENOW_INSTANCE_URL: ""
+  SERVICENOW_USERNAME: ""
+  SERVICENOW_INCIDENT_ON_DENY: "false"
+  SENTINEL_ENABLED: "false"
+  SENTINEL_DCE_ENDPOINT: ""
+  SENTINEL_DCR_IMMUTABLE_ID: ""
+  SENTINEL_STREAM_NAME: "Custom-ACRDecisions_CL"
+  SENTINEL_TENANT_ID: ""
+  SENTINEL_CLIENT_ID: ""
+  SENTINEL_BATCH_MAX: "100"
+  SPLUNK_HEC_ENABLED: "false"
+  SPLUNK_HEC_URL: ""
+  SPLUNK_HEC_INDEX: ""
+  SPLUNK_HEC_SOURCE: "acr-control-plane"
+  SPLUNK_HEC_SOURCETYPE: "acr:events"
+  SPLUNK_HEC_BATCH_MAX: "100"
+  SYSLOG_ENABLED: "false"
+  SYSLOG_HOST: ""
+  SYSLOG_PORT: "514"
+  SYSLOG_PROTOCOL: "udp"
+  SYSLOG_FACILITY: "16"
+  SYSLOG_APP_NAME: "acr"
