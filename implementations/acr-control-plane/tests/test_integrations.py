@@ -1,10 +1,11 @@
-"""WS4 integrations tests: outbox, Slack, Teams, ServiceNow, Sentinel.
+"""WS4 integrations tests: outbox, Slack, Teams, ServiceNow, Sentinel,
+Splunk HEC, syslog.
 
 Slack is contract-tested against a mocked Web API (httpx MockTransport)
-and fabricated signed callbacks. Teams / ServiceNow / Sentinel are
-UNVERIFIED integrations: these tests assert request shape, auth, and
-error handling against mocks only — no live tenant/instance/workspace
-is touched anywhere in this file.
+and fabricated signed callbacks. Teams / ServiceNow / Sentinel /
+Splunk / syslog are UNVERIFIED integrations: these tests assert
+request shape, auth, and error handling against mocks only — no live
+tenant/instance/workspace/receiver is touched anywhere in this file.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import time
 from datetime import UTC, timedelta
 from urllib.parse import urlencode
@@ -31,8 +33,9 @@ from acr.db.models import (
     IntegrationOutboxRecord,
 )
 from acr.integrations import slack as slack_mod
+from acr.integrations import syslog as syslog_mod
 from acr.integrations import teams as teams_mod
-from acr.integrations.outbox import process_outbox_once
+from acr.integrations.outbox import enqueue_event, process_outbox_once
 from acr.pillar6_authority.approval import create_approval_request, expire_timed_out_approvals
 
 SLACK_SECRET = "test-signing-secret"
@@ -70,6 +73,19 @@ async def _integrations_settings():
         "sentinel_tenant_id",
         "sentinel_client_id",
         "sentinel_client_secret",
+        "splunk_hec_enabled",
+        "splunk_hec_url",
+        "splunk_hec_token",
+        "splunk_hec_index",
+        "splunk_hec_source",
+        "splunk_hec_sourcetype",
+        "splunk_hec_batch_max",
+        "syslog_enabled",
+        "syslog_host",
+        "syslog_port",
+        "syslog_protocol",
+        "syslog_facility",
+        "syslog_app_name",
         "integrations_outbox_max_attempts",
         "execute_allowed_actions",
     ]
@@ -991,3 +1007,313 @@ class TestCallbackEdges:
         assert counts["delivered"] == 4
         assert sum("webhook.office.com" in u for u in calls) == 2
         assert sum("service-now" in u for u in calls) == 2
+
+
+# ── Splunk HEC (UNVERIFIED — mock contract tests only) ────────────────────────
+
+
+def enable_splunk() -> None:
+    settings.splunk_hec_enabled = True
+    settings.splunk_hec_url = "https://splunk.example.com:8088/services/collector/event"
+    settings.splunk_hec_token = "hec-test-token"
+    settings.splunk_hec_index = "acr_events"
+    settings.splunk_hec_source = "acr-control-plane"
+    settings.splunk_hec_sourcetype = "acr:events"
+
+
+def splunk_handler(calls: list, *, status: int = 200, code: int = 0):
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((str(request.url), dict(request.headers), request.content.decode()))
+        if status != 200:
+            return httpx.Response(status, json={})
+        text = "Success" if code == 0 else "Invalid token"
+        return httpx.Response(200, json={"text": text, "code": code})
+
+    return handler
+
+
+class TestSplunk:
+    async def test_approval_event_posted_as_hec_envelope(
+        self, db: AsyncSession, sample_agent
+    ) -> None:
+        enable_splunk()
+        record = await make_approval(db, sample_agent.agent_id)
+        rows = await outbox_rows(db, integration="splunk", event_type="approval_requested")
+        assert len(rows) == 1
+        calls: list = []
+        async with mock_client(splunk_handler(calls)) as client:
+            counts = await process_outbox_once(db, client)
+        assert counts["delivered"] == 1
+        url, headers, body = calls[0]
+        assert url == "https://splunk.example.com:8088/services/collector/event"
+        assert headers["authorization"] == "Splunk hec-test-token"
+        envelope = json.loads(body)
+        assert envelope["index"] == "acr_events"
+        assert envelope["source"] == "acr-control-plane"
+        assert envelope["sourcetype"] == "acr:events"
+        assert isinstance(envelope["time"], (int, float))
+        event = envelope["event"]
+        assert event["event_type"] == "approval_requested"
+        assert event["correlation_id"] == "corr-ws4-1"
+        assert event["payload"]["request_id"] == record.request_id
+        # Chat payload rules apply here too: parameters never leave the API.
+        assert "parameters" not in body
+
+    async def test_events_batch_into_one_request(self, db: AsyncSession, sample_agent) -> None:
+        from acr.pillar5_containment.graduated import apply_graduated_response
+
+        enable_splunk()
+        await make_approval(db, sample_agent.agent_id)
+        await apply_graduated_response(
+            db, sample_agent.agent_id, drift_score=0.80, correlation_id="corr-splunk-2"
+        )
+        await db.commit()
+        rows = await outbox_rows(db, integration="splunk")
+        assert len(rows) == 2
+        calls: list = []
+        async with mock_client(splunk_handler(calls)) as client:
+            counts = await process_outbox_once(db, client)
+        assert counts["delivered"] == 2
+        assert len(calls) == 1  # one POST carried both envelopes
+        lines = calls[0][2].splitlines()
+        assert len(lines) == 2
+        event_types = {json.loads(line)["event"]["event_type"] for line in lines}
+        assert event_types == {"approval_requested", "containment_action"}
+        for row in await outbox_rows(db, integration="splunk"):
+            assert row.status == "delivered"
+
+    async def test_evaluate_enqueues_and_worker_exports_recorded_decisions(
+        self, async_client, db: AsyncSession, sample_agent
+    ) -> None:
+        enable_splunk()
+        resp = await async_client.post(
+            "/acr/evaluate",
+            json={
+                "agent_id": sample_agent.agent_id,
+                "action": {"tool_name": "query_customer_db", "parameters": {"customer_id": "C-1"}},
+                "context": {"session_id": "s", "actions_this_minute": 1, "hourly_spend_usd": 0.1},
+            },
+        )
+        assert resp.status_code == 200 and resp.json()["decision"] == "allow"
+        rows = await outbox_rows(db, integration="splunk", event_type="decision_export")
+        assert len(rows) == 1
+        assert rows[0].payload["record"]["Decision"] == "allow"
+        assert rows[0].payload["record"]["CorrelationId"] == resp.json()["correlation_id"]
+        calls: list = []
+        async with mock_client(splunk_handler(calls)) as client:
+            counts = await process_outbox_once(db, client)
+        assert counts["delivered"] == 1
+        envelope = json.loads(calls[0][2])
+        assert envelope["event"]["payload"]["record"]["Decision"] == "allow"
+
+    async def test_invalid_token_dead_letters_immediately(
+        self, db: AsyncSession, sample_agent
+    ) -> None:
+        enable_splunk()
+        await make_approval(db, sample_agent.agent_id)
+        calls: list = []
+        async with mock_client(splunk_handler(calls, status=401)) as client:
+            counts = await process_outbox_once(db, client)
+        # 401 is a fatal classification: dead-lettered on the first
+        # attempt even though the outbox allows five.
+        assert counts["dead_letter"] == 1
+        row = (await outbox_rows(db, integration="splunk"))[0]
+        assert row.status == "dead_letter" and row.attempts == 1
+        assert "401" in (row.last_error or "")
+
+    async def test_hec_error_code_in_200_body_dead_letters_when_fatal(
+        self, db: AsyncSession, sample_agent
+    ) -> None:
+        enable_splunk()
+        await make_approval(db, sample_agent.agent_id)
+        calls: list = []
+        async with mock_client(splunk_handler(calls, code=8)) as client:
+            counts = await process_outbox_once(db, client)
+        assert counts["dead_letter"] == 1
+        row = (await outbox_rows(db, integration="splunk"))[0]
+        assert "code 8" in (row.last_error or "")
+
+    async def test_hec_500_is_retried_not_dead_lettered(
+        self, db: AsyncSession, sample_agent
+    ) -> None:
+        enable_splunk()
+        await make_approval(db, sample_agent.agent_id)
+        calls: list = []
+        async with mock_client(splunk_handler(calls, status=500)) as client:
+            counts = await process_outbox_once(db, client)
+        assert counts["failed"] == 1
+        row = (await outbox_rows(db, integration="splunk"))[0]
+        assert row.status == "pending" and row.attempts == 1
+
+    async def test_splunk_and_syslog_off_by_default_write_no_rows(
+        self, db: AsyncSession, sample_agent
+    ) -> None:
+        assert settings.splunk_hec_enabled is False
+        assert settings.syslog_enabled is False
+        await make_approval(db, sample_agent.agent_id)
+        assert await outbox_rows(db, integration="splunk") == []
+        assert await outbox_rows(db, integration="syslog") == []
+
+
+# ── Syslog (UNVERIFIED — mock contract tests only) ────────────────────────────
+
+_SYSLOG_RE = re.compile(r"^<(\d+)>1 (\S+) (\S+) (\S+) (\S+) (\S+) - (.*)$", re.DOTALL)
+
+
+def enable_syslog(monkeypatch, sent: list, *, protocol: str = "udp") -> None:
+    settings.syslog_enabled = True
+    settings.syslog_host = "logs.example.com"
+    settings.syslog_port = 5514
+    settings.syslog_protocol = protocol
+    settings.syslog_facility = 16
+    settings.syslog_app_name = "acr"
+
+    async def fake_send(data: bytes) -> None:
+        sent.append(data)
+
+    monkeypatch.setattr(syslog_mod, "_send_tcp" if protocol == "tcp" else "_send_udp", fake_send)
+
+
+def parse_syslog(raw: bytes) -> tuple[int, str, dict]:
+    match = _SYSLOG_RE.match(raw.decode())
+    assert match is not None, f"not an RFC 5424 message: {raw!r}"
+    pri, _ts, _host, app_name, _procid, msgid, msg = match.groups()
+    assert app_name == "acr"
+    return int(pri), msgid, json.loads(msg)
+
+
+def _http_must_not_be_called(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(500, json={})
+
+
+class TestSyslog:
+    async def test_approval_event_udp_rfc5424_shape(
+        self, db: AsyncSession, sample_agent, monkeypatch
+    ) -> None:
+        sent: list = []
+        enable_syslog(monkeypatch, sent)
+        record = await make_approval(db, sample_agent.agent_id)
+        rows = await outbox_rows(db, integration="syslog", event_type="approval_requested")
+        assert len(rows) == 1
+        async with mock_client(_http_must_not_be_called) as client:
+            counts = await process_outbox_once(db, client)
+        assert counts["delivered"] == 1
+        assert len(sent) == 1
+        pri, msgid, event = parse_syslog(sent[0])
+        assert pri == 16 * 8 + 6  # local0 + info
+        assert msgid == "approval_requested"
+        assert event["event_type"] == "approval_requested"
+        assert event["correlation_id"] == "corr-ws4-1"
+        assert event["payload"]["request_id"] == record.request_id
+        row = (await outbox_rows(db, integration="syslog"))[0]
+        assert row.delivery_ref == {"transport": "udp", "bytes": len(sent[0])}
+
+    async def test_containment_and_killswitch_severities(
+        self, db: AsyncSession, sample_agent, monkeypatch
+    ) -> None:
+        from acr.integrations.events import notify_killswitch
+        from acr.pillar5_containment.graduated import apply_graduated_response
+
+        sent: list = []
+        enable_syslog(monkeypatch, sent)
+        await apply_graduated_response(
+            db, sample_agent.agent_id, drift_score=0.80, correlation_id="corr-syslog-1"
+        )
+        await notify_killswitch(
+            db, agent_id=sample_agent.agent_id, reason="manual", operator_id="op"
+        )
+        await db.commit()
+        async with mock_client(_http_must_not_be_called) as client:
+            counts = await process_outbox_once(db, client)
+        assert counts["delivered"] == 2
+        by_msgid = {}
+        for raw in sent:
+            pri, msgid, event = parse_syslog(raw)
+            by_msgid[msgid] = (pri, event)
+        assert by_msgid["containment_action"][0] == 16 * 8 + 3  # err
+        assert by_msgid["killswitch_activated"][0] == 16 * 8 + 2  # crit
+        assert by_msgid["containment_action"][1]["correlation_id"] == "corr-syslog-1"
+
+    async def test_decision_export_after_evaluate(
+        self, async_client, db: AsyncSession, sample_agent, monkeypatch
+    ) -> None:
+        sent: list = []
+        enable_syslog(monkeypatch, sent)
+        resp = await async_client.post(
+            "/acr/evaluate",
+            json={
+                "agent_id": sample_agent.agent_id,
+                "action": {"tool_name": "query_customer_db", "parameters": {"customer_id": "C-1"}},
+                "context": {"session_id": "s", "actions_this_minute": 1, "hourly_spend_usd": 0.1},
+            },
+        )
+        assert resp.status_code == 200 and resp.json()["decision"] == "allow"
+        rows = await outbox_rows(db, integration="syslog", event_type="decision_export")
+        assert len(rows) == 1
+        async with mock_client(_http_must_not_be_called) as client:
+            counts = await process_outbox_once(db, client)
+        assert counts["delivered"] == 1
+        pri, msgid, event = parse_syslog(sent[0])
+        assert msgid == "decision_export"
+        assert pri == 16 * 8 + 6  # allow -> info
+        assert event["payload"]["record"]["Decision"] == "allow"
+        assert event["payload"]["record"]["CorrelationId"] == resp.json()["correlation_id"]
+
+    async def test_tcp_delivery_and_octet_count_framing(
+        self, db: AsyncSession, sample_agent, monkeypatch
+    ) -> None:
+        sent: list = []
+        enable_syslog(monkeypatch, sent, protocol="tcp")
+        await make_approval(db, sample_agent.agent_id)
+        async with mock_client(_http_must_not_be_called) as client:
+            counts = await process_outbox_once(db, client)
+        assert counts["delivered"] == 1
+        assert len(sent) == 1
+        _pri, msgid, _event = parse_syslog(sent[0])
+        assert msgid == "approval_requested"
+        # RFC 6587 octet counting is applied by the TCP transport itself.
+        framed = syslog_mod._frame_tcp(sent[0])
+        assert framed == f"{len(sent[0])} ".encode() + sent[0]
+
+    async def test_send_failure_retries_and_producer_unaffected(
+        self, db: AsyncSession, sample_agent, monkeypatch
+    ) -> None:
+        from acr.pillar5_containment.graduated import apply_graduated_response
+
+        settings.syslog_enabled = True
+        settings.syslog_host = "logs.example.com"
+        settings.syslog_port = 5514
+
+        async def failing_send(data: bytes) -> None:
+            raise OSError("network unreachable")
+
+        monkeypatch.setattr(syslog_mod, "_send_udp", failing_send)
+        action = await apply_graduated_response(
+            db, sample_agent.agent_id, drift_score=0.80, correlation_id="corr-syslog-2"
+        )
+        await db.commit()
+        assert action is not None  # containment applied despite the outage
+        async with mock_client(_http_must_not_be_called) as client:
+            counts = await process_outbox_once(db, client)
+        assert counts["failed"] == 1
+        row = (await outbox_rows(db, integration="syslog"))[0]
+        assert row.status == "pending" and row.attempts == 1
+        assert "network unreachable" in (row.last_error or "")
+
+    async def test_unknown_event_type_dead_letters_immediately(
+        self, db: AsyncSession, monkeypatch
+    ) -> None:
+        sent: list = []
+        enable_syslog(monkeypatch, sent)
+        await enqueue_event(
+            db,
+            integration="syslog",
+            event_type="bogus_event",
+            reference="ref-bogus",
+            payload={},
+        )
+        await db.commit()
+        async with mock_client(_http_must_not_be_called) as client:
+            counts = await process_outbox_once(db, client)
+        assert counts["dead_letter"] == 1
+        assert sent == []
