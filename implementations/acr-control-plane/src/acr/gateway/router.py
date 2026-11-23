@@ -44,7 +44,7 @@ from acr.common.redis_client import get_redis_or_none
 from acr.common.time import iso_utcnow
 from acr.config import runtime_dependencies_fail_closed, settings
 from acr.db.database import BackgroundSessionLocal, get_db
-from acr.db.models import DecisionSequenceRecord, PolicyDecisionRecord
+from acr.db.models import DecisionSequenceRecord, EvaluationInputRecord, PolicyDecisionRecord
 from acr.gateway.auth import require_agent_token
 from acr.gateway.executor import execute_action
 from acr.gateway.models import EvaluateRequest, EvaluateResponse
@@ -174,6 +174,7 @@ async def _record_policy_decisions(
     tool_name: str,
     decisions: list[dict],
     enforcement_mode: str = "enforce",
+    retained_input_data: dict | None = None,
 ) -> int:
     """Durably record one evaluation's policy decisions before responding.
 
@@ -203,6 +204,12 @@ async def _record_policy_decisions(
                         sequence=sequence,
                     )
                 )
+            # WS2 input retention rides this transaction when the caller
+            # supplies it: the retained input commits (or rolls back) with
+            # the decisions it belongs to, so a retention write failure is
+            # a recording failure and takes the same fail-secure path.
+            if retained_input_data is not None:
+                db.add(EvaluationInputRecord(**retained_input_data))
             await db.commit()
             return sequence
         except (IntegrityError, OperationalError) as exc:
@@ -511,6 +518,28 @@ async def evaluate(
         # reflects issuance order, not persistence or completion order. If
         # recording fails, the evaluation fails secure: an unrecorded
         # decision is not evidence of enforcement.
+        #
+        # WS2: when the deployment has opted in to evaluation-input
+        # retention, the effective evaluation input (the exact manifest,
+        # action, and enriched context handed to the policy engine at step
+        # [4], redacted before storage) is written inside the same
+        # recording transaction. Retention off (the default) passes None
+        # and this step is byte-for-byte the pre-WS2 behavior.
+        retained_input_data = None
+        if settings.evaluation_input_retention_enabled:
+            from acr.pillar4_observability.input_retention import build_retained_input_data
+
+            retained_input_data = build_retained_input_data(
+                correlation_id=correlation_id,
+                agent_id=req.agent_id,
+                evaluation_input={
+                    "agent": manifest.model_dump(mode="json"),
+                    "action": req.action.model_dump(mode="json"),
+                    "context": enriched_context,
+                },
+                recorded_decision=response_decision,
+                enforcement_mode=enforcement_mode,
+            )
         try:
             decision_sequence = await _record_policy_decisions(
                 db,
@@ -519,6 +548,7 @@ async def evaluate(
                 tool_name=effective_action["tool_name"],
                 decisions=[d.model_dump(mode="json") for d in response_decisions],
                 enforcement_mode=enforcement_mode,
+                retained_input_data=retained_input_data,
             )
         except Exception as exc:
             await db.rollback()

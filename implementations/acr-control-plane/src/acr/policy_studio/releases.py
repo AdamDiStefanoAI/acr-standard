@@ -5,6 +5,7 @@ import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import structlog
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +17,8 @@ from acr.policy_studio.distribution import build_active_runtime_bundle
 from acr.policy_studio.isolation import validate_studio_policy
 from acr.policy_studio.models import PolicyValidationResponse
 from acr.policy_studio.publisher import publish_active_policy_bundle, publish_policy_bundle
+
+logger = structlog.get_logger(__name__)
 
 
 def validate_policy_draft_record(record: PolicyDraftRecord) -> PolicyValidationResponse:
@@ -89,19 +92,13 @@ async def get_policy_release(db: AsyncSession, release_id: str) -> PolicyRelease
 async def _validate_candidate(
     db: AsyncSession, record: PolicyDraftRecord | PolicyReleaseRecord
 ) -> None:
-    active = await list_active_policy_releases(db)
-    candidate = SimpleNamespace(
-        agent_id=record.agent_id,
-        release_id="candidate",
-        version=0,
-        activated_at=None,
-        rego_policy=record.rego_policy,
-    )
-    records = [item for item in active if item.agent_id != record.agent_id] + [candidate]
+    # The construction lives in pillar2_policy.simulation so release
+    # validation, simulation runs, and the promotion gate all build (and
+    # therefore hash) byte-identical candidate bundles.
+    from acr.pillar2_policy.simulation import build_candidate_bundle
+
     try:
-        await asyncio.to_thread(
-            build_active_runtime_bundle, records, extensions=settings.policy_extension_dir or None
-        )
+        await build_candidate_bundle(db, agent_id=record.agent_id, rego_policy=record.rego_policy)
     except ValueError as exc:
         raise PolicyValidationError(str(exc)) from exc
 
@@ -111,6 +108,7 @@ async def activate_policy_release(
     *,
     release_id: str,
     actor: str,
+    simulation_report_id: str | None = None,
 ) -> PolicyReleaseRecord:
     record = await get_policy_release(db, release_id)
     try:
@@ -119,6 +117,29 @@ async def activate_policy_release(
         raise PolicyValidationError(str(exc)) from exc
 
     await _validate_candidate(db, record)
+
+    # ── WS2 promotion gate ────────────────────────────────────────────────
+    # Activation is the promotion step: it distributes the bundle. While
+    # evaluation-input retention is on (and the gate is enabled), the
+    # activator must attach a simulation report for the exact bundle this
+    # activation would distribute. With retention off the gate is inert
+    # and activation behaves exactly as before WS2. A report id supplied
+    # voluntarily is always verified, gate or not.
+    from acr.pillar2_policy.simulation import (
+        assert_promotion_gate,
+        build_candidate_bundle,
+        simulation_gate_applies,
+    )
+
+    gate_applied = simulation_gate_applies()
+    if gate_applied or simulation_report_id:
+        gate_artifact = await build_candidate_bundle(
+            db, agent_id=record.agent_id, rego_policy=record.rego_policy
+        )
+        gate_record = await assert_promotion_gate(
+            db, simulation_report_id=simulation_report_id, bundle_sha256=gate_artifact.sha256
+        )
+        simulation_report_id = gate_record.run_id
     active_result = await db.execute(
         select(PolicyReleaseRecord).where(
             PolicyReleaseRecord.agent_id == record.agent_id,
@@ -149,9 +170,19 @@ async def activate_policy_release(
     record.active_bundle_uri = published.uri
     record.activated_by = actor
     record.activated_at = datetime.now(UTC)
+    if simulation_report_id:
+        record.simulation_report_id = simulation_report_id
 
     await db.flush()
     await db.refresh(record)
+    logger.info(
+        "policy_release_activated",
+        release_id=record.release_id,
+        agent_id=record.agent_id,
+        actor=actor,
+        simulation_gate_applied=gate_applied,
+        simulation_report_id=record.simulation_report_id,
+    )
     return record
 
 

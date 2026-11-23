@@ -119,6 +119,29 @@ async def _retention_loop() -> None:
             log.warning("retention_sweep_error", error=str(exc))
 
 
+async def _evaluation_input_purge_loop() -> None:
+    """Purge expired retained evaluation inputs (v1.5.0 WS2).
+
+    Runs on the configured interval; a no-op while retention is off (the
+    table is empty) or nothing has expired. Only payloads are deleted —
+    decision records are never touched by this loop.
+    """
+    from acr.db.database import async_session_factory as _purge_session_factory
+    from acr.pillar4_observability.input_retention import purge_expired_inputs
+
+    log = structlog.get_logger(__name__)
+    while True:
+        await asyncio.sleep(max(60, settings.evaluation_input_purge_interval_seconds))
+        try:
+            async with _purge_session_factory() as db:
+                purged = await purge_expired_inputs(db)
+                await db.commit()
+            if purged:
+                log.info("evaluation_input_purge_complete", purged=purged)
+        except Exception as exc:
+            log.warning("evaluation_input_purge_error", error=str(exc))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup: reject weak secrets in staging/production environments
@@ -150,6 +173,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 "drift_baseline_versions",
                 "operator_credentials",
                 "policy_drafts",
+                "evaluation_inputs",
+                "policy_simulations",
             }
 
             def _missing_tables(sync_conn):
@@ -170,11 +195,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     expiry_task = asyncio.create_task(_approval_expiry_loop())
     retention_task = asyncio.create_task(_retention_loop())
     heartbeat_task = asyncio.create_task(_heartbeat_sweep_loop())
+    input_purge_task = asyncio.create_task(_evaluation_input_purge_loop())
 
     yield
 
     # Shutdown: cancel background tasks
-    for task in (expiry_task, retention_task, heartbeat_task):
+    for task in (expiry_task, retention_task, heartbeat_task, input_purge_task):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
@@ -233,7 +259,10 @@ from acr.operator_keys.router import router as operator_keys_router  # noqa: E40
 from acr.pillar1_identity.router import router as identity_router  # noqa: E402
 from acr.pillar5_containment.router import router as containment_router  # noqa: E402
 from acr.pillar6_authority.router import router as authority_router  # noqa: E402
-from acr.policy_studio.router import bundle_router  # noqa: E402
+from acr.policy_studio.router import (  # noqa: E402
+    bundle_router,
+    simulation_router,
+)
 from acr.policy_studio.router import router as policy_studio_router  # noqa: E402
 
 app.include_router(gateway_router)
@@ -241,6 +270,7 @@ app.include_router(auth_router)
 app.include_router(identity_router)
 app.include_router(operator_keys_router)
 app.include_router(policy_studio_router)
+app.include_router(simulation_router)
 # When require_bundle_auth is False, override the bundle auth dependency with
 # a no-op so OPA can poll without credentials (rely on network policy instead).
 if not settings.require_bundle_auth:

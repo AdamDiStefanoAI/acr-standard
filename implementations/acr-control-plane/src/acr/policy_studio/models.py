@@ -61,6 +61,23 @@ class PolicyPublishRequest(BaseModel):
     notes: str | None = None
 
 
+class PolicyActivateRequest(BaseModel):
+    """Optional activation body (v1.5.0 WS2). Carries the simulation
+    report the promotion gate requires while retention is on; activation
+    without a body keeps working exactly as before."""
+
+    simulation_report_id: str | None = Field(default=None, max_length=64)
+
+
+class PolicySimulationRunRequest(BaseModel):
+    """Run a policy simulation for a candidate release over a window of
+    recorded traffic (v1.5.0 WS2)."""
+
+    release_id: str = Field(min_length=1, max_length=64)
+    window_start: datetime
+    window_end: datetime
+
+
 class PolicyReleaseResponse(BaseModel):
     release_id: str
     draft_id: str
@@ -77,6 +94,7 @@ class PolicyReleaseResponse(BaseModel):
     activated_by: str | None
     activated_at: datetime | None
     published_by: str | None
+    simulation_report_id: str | None = None
     rollback_from_release_id: str | None
     notes: str | None
     created_at: datetime | None

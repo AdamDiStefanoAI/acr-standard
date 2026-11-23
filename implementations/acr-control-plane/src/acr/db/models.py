@@ -396,6 +396,94 @@ class OperatorCredentialRecord(Base):
     )
 
 
+# ── Retained evaluation inputs (v1.5.0 WS2, migration 0017) ─────────────────
+
+
+class EvaluationInputRecord(Base):
+    """One evaluation's retained input, kept for policy simulation replay.
+
+    Written only when the deployment opts in
+    (settings.evaluation_input_retention_enabled, default off), inside the
+    same transaction that records the evaluation's policy decisions, so a
+    retained input can never exist for an unrecorded decision and a storage
+    failure fails the recording exactly like a decision-write failure.
+    The payload is the effective evaluation input (agent manifest, action,
+    enriched context) AFTER configured redaction has been applied — the
+    unredacted payload never touches storage. Purge deletes the payload
+    (sets it NULL) and flips state to 'purged'; the row remains as the
+    durable note that this decision's input was retained and later purged,
+    which is what lets simulation reports account coverage honestly.
+    """
+
+    __tablename__ = "evaluation_inputs"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('retained', 'purged')",
+            name="ck_evaluation_inputs_state",
+        ),
+        Index("ix_evaluation_inputs_agent_retained", "agent_id", "retained_at"),
+        Index("ix_evaluation_inputs_expires", "state", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    correlation_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    agent_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("agents.agent_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # The redacted effective evaluation input. NULL once purged.
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # SHA-256 of the stored (redacted) payload's canonical JSON. Kept after
+    # purge so a simulation result can still reference what it replayed.
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    # The final decision the gateway issued for this evaluation, denormalized
+    # so coverage accounting does not need to reconstruct it from the
+    # per-rule decision rows.
+    recorded_decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    enforcement_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="enforce")
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="retained")
+    retained_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# ── Policy simulation runs (v1.5.0 WS2, migration 0018) ──────────────────────
+
+
+class PolicySimulationRecord(Base):
+    """A durable record of one policy simulation run.
+
+    A simulation is itself evidence: who ran it, against which exact bundle
+    (sha256 of the archive that was evaluated), over which window, and what
+    it found. The full report is stored as JSON; result_hash binds the
+    report's substantive content so a stored report can be checked for
+    tampering the same way other ACR artifacts are.
+    """
+
+    __tablename__ = "policy_simulations"
+    __table_args__ = (Index("ix_policy_simulations_bundle", "bundle_sha256"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    actor: Mapped[str] = mapped_column(String(256), nullable=False)
+    # Human-meaningful bundle identifier: a policy release id, or a file
+    # name for an ad-hoc archive. The hash below is the identity that
+    # matters; this is for readers.
+    bundle_label: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    bundle_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decisions_in_window: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    inputs_available: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    inputs_missing: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    report: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    result_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
 # ── Policy drafts ────────────────────────────────────────────────────────────
 
 
@@ -452,6 +540,10 @@ class PolicyReleaseRecord(Base):
     activated_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
     activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     published_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Simulation report (policy_simulations.run_id) attached when this
+    # release was activated under the WS2 promotion gate; NULL for releases
+    # activated with the gate inert or before the gate existed.
+    simulation_report_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     rollback_from_release_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
