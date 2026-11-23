@@ -167,6 +167,39 @@ async def _assign_decision_sequence(db: AsyncSession, agent_id: str) -> int:
     return 1
 
 
+async def _active_bundle_hash(db: AsyncSession) -> str | None:
+    """SHA-256 of the runtime bundle active for this evaluation.
+
+    Derived exactly as WS2 policy simulation and the Policy Studio
+    activation gate derive it: build the active runtime bundle from the
+    currently active releases and hash the archive bytes
+    (RuntimeBundleArtifact.sha256). Best-effort by design: bundle-hash
+    stamping is evidence enrichment, and a bundle that cannot be
+    rebuilt at recording time must never become a recording failure —
+    the §18 fail-secure path covers persistence failures, not this.
+    Returns None on any failure; the caller stamps NULL.
+    """
+    # Local imports, mirroring acr.policy_studio.distribution's own
+    # lazy import of releases: releases imports simulation, and this
+    # module must not grow a new import cycle at module load.
+    import asyncio
+
+    from acr.policy_studio.distribution import build_active_runtime_bundle
+    from acr.policy_studio.releases import list_active_policy_releases
+
+    try:
+        records = await list_active_policy_releases(db)
+        artifact = await asyncio.to_thread(
+            build_active_runtime_bundle,
+            records,
+            extensions=settings.policy_extension_dir or None,
+        )
+        return artifact.sha256
+    except Exception as exc:
+        logger.warning("bundle_hash_unavailable", error=str(exc))
+        return None
+
+
 async def _record_policy_decisions(
     db: AsyncSession,
     *,
@@ -176,6 +209,7 @@ async def _record_policy_decisions(
     decisions: list[dict],
     enforcement_mode: str = "enforce",
     retained_input_data: dict | None = None,
+    bundle_hash: str | None = None,
 ) -> int:
     """Durably record one evaluation's policy decisions before responding.
 
@@ -197,6 +231,7 @@ async def _record_policy_decisions(
                         correlation_id=correlation_id,
                         agent_id=agent_id,
                         policy_id=str(item["policy_id"]),
+                        bundle_hash=bundle_hash,
                         decision=str(item["decision"]),
                         enforcement_mode=enforcement_mode,
                         reason=item.get("reason"),
@@ -546,6 +581,13 @@ async def evaluate(
                 recorded_decision=response_decision,
                 enforcement_mode=enforcement_mode,
             )
+        # Bundle-hash stamping (migration 0021): the hash of the bundle
+        # active for this evaluation, computed with the WS2 derivation
+        # and stamped on every decision row from this evaluation,
+        # enforce and observe alike. Computed outside the recording
+        # transaction and best-effort: None stamps NULL and can never
+        # turn into the fail-secure 503 below.
+        bundle_hash = await _active_bundle_hash(db)
         try:
             decision_sequence = await _record_policy_decisions(
                 db,
@@ -555,6 +597,7 @@ async def evaluate(
                 decisions=[d.model_dump(mode="json") for d in response_decisions],
                 enforcement_mode=enforcement_mode,
                 retained_input_data=retained_input_data,
+                bundle_hash=bundle_hash,
             )
         except Exception as exc:
             await db.rollback()
