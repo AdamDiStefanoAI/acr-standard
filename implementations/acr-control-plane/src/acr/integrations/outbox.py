@@ -6,7 +6,8 @@ and swallows every failure (logging it), so an integration problem can
 never break, block, or alter the path that produced the event. When no
 relevant integration is enabled the producers do not call it at all.
 
-Worker side — `process_outbox_once` drains due rows: claim, deliver via
+Worker side — `process_outbox_once` drains due rows: claim (atomically,
+so exactly one of the gateway's worker loops owns each row), deliver via
 the integration's sender, record an attempt row either way, retry with
 exponential backoff, and dead-letter after the configured maximum
 attempts with the failure kept on the row. Delivery is evidence: every
@@ -19,7 +20,7 @@ from datetime import timedelta
 
 import httpx
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from acr.common.time import utcnow
@@ -165,13 +166,11 @@ async def _deliver_batch(
     """Batched rows: one request carries many records (Sentinel Logs
     Ingestion, Splunk HEC).
 
-    Each row still gets its own attempt record and its own retry state —
-    batching changes the HTTP shape, never the evidence shape.
+    Rows arrive already claimed by `_claim_due` (status 'delivering',
+    attempt counter incremented). Each row still gets its own attempt
+    record and its own retry state — batching changes the HTTP shape,
+    never the evidence shape.
     """
-    for row in rows:
-        row.status = "delivering"
-        row.attempts += 1
-    await db.commit()
     try:
         await deliver_batch(rows, client)
     except Exception as exc:
@@ -198,6 +197,65 @@ async def _deliver_splunk_batch(
     await _deliver_batch(db, rows, client, splunk.deliver_batch)
 
 
+async def _claim_due(db: AsyncSession, limit: int = 500) -> list[IntegrationOutboxRecord]:
+    """Atomically claim due pending rows for this drainer.
+
+    A single conditional UPDATE flips due rows to 'delivering' and
+    increments their attempt counter; the id subquery takes
+    FOR UPDATE SKIP LOCKED on Postgres so concurrent drainers (the
+    gateway runs multiple uvicorn workers, each with its own lifespan
+    loop) partition the due set instead of claiming the same row twice
+    — a row is delivered by exactly one drainer. Claiming is committed
+    before any delivery starts, so a claimed row is invisible to other
+    drainers even while its HTTP call is still in flight.
+    """
+    now = utcnow()
+    due_ids = (
+        select(IntegrationOutboxRecord.id)
+        .where(
+            IntegrationOutboxRecord.status == "pending",
+            IntegrationOutboxRecord.next_attempt_at <= now,
+        )
+        .order_by(IntegrationOutboxRecord.created_at.asc())
+        .limit(limit)
+    )
+    if db.get_bind().dialect.name == "postgresql":
+        due_ids = due_ids.with_for_update(skip_locked=True)
+    result = await db.execute(
+        update(IntegrationOutboxRecord)
+        .where(
+            IntegrationOutboxRecord.id.in_(due_ids.scalar_subquery()),
+            IntegrationOutboxRecord.status == "pending",
+        )
+        .values(
+            status="delivering",
+            attempts=IntegrationOutboxRecord.attempts + 1,
+        )
+        .returning(IntegrationOutboxRecord.id)
+        .execution_options(synchronize_session=False)
+    )
+    claimed_ids = list(result.scalars().all())
+    await db.commit()
+    if not claimed_ids:
+        return []
+    rows = list(
+        (
+            await db.execute(
+                select(IntegrationOutboxRecord)
+                .where(IntegrationOutboxRecord.id.in_(claimed_ids))
+                # The caller's session may already hold these instances
+                # in an expired state (any rollback expires them); the
+                # claim must hand the drainer the committed truth.
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    rows.sort(key=lambda r: r.created_at)
+    return rows
+
+
 async def process_outbox_once(
     db: AsyncSession, client: httpx.AsyncClient | None = None
 ) -> dict[str, int]:
@@ -211,17 +269,7 @@ async def process_outbox_once(
         client = httpx.AsyncClient(timeout=10.0)
     counts = {"delivered": 0, "failed": 0, "dead_letter": 0}
     try:
-        now = utcnow()
-        result = await db.execute(
-            select(IntegrationOutboxRecord)
-            .where(
-                IntegrationOutboxRecord.status == "pending",
-                IntegrationOutboxRecord.next_attempt_at <= now,
-            )
-            .order_by(IntegrationOutboxRecord.created_at.asc())
-            .limit(500)
-        )
-        due = list(result.scalars().all())
+        due = await _claim_due(db)
 
         def _tally(batch: list[IntegrationOutboxRecord]) -> None:
             for row in batch:
@@ -247,18 +295,17 @@ async def process_outbox_once(
             _tally(batch)
 
         for row in other_rows:
-            row.status = "delivering"
-            row.attempts += 1
-            await db.commit()
+            # The row was claimed (and the claim committed) by
+            # _claim_due before delivery, so it survives the rollback
+            # below; reload it and record the failed attempt against
+            # it. Capture the id now: the rollback expires ORM state.
+            row_id = row.id
             try:
                 await _deliver_one(db, row, client)
                 counts["delivered"] += 1
             except Exception as exc:
                 await db.rollback()
-                # The claim (status + attempt increment) was committed
-                # before delivery, so it survives the rollback; reload
-                # the row and record the failed attempt against it.
-                row = await db.get(IntegrationOutboxRecord, row.id)
+                row = await db.get(IntegrationOutboxRecord, row_id)
                 if row is None:
                     continue
                 await _apply_failure(db, row, exc)
