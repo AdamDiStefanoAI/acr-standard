@@ -6,7 +6,8 @@ and swallows every failure (logging it), so an integration problem can
 never break, block, or alter the path that produced the event. When no
 relevant integration is enabled the producers do not call it at all.
 
-Worker side — `process_outbox_once` drains due rows: claim, deliver via
+Worker side — `process_outbox_once` drains due rows: claim (atomically,
+so exactly one of the gateway's worker loops owns each row), deliver via
 the integration's sender, record an attempt row either way, retry with
 exponential backoff, and dead-letter after the configured maximum
 attempts with the failure kept on the row. Delivery is evidence: every
@@ -15,11 +16,12 @@ attempt lands in integration_delivery_attempts.
 
 from __future__ import annotations
 
+import uuid
 from datetime import timedelta
 
 import httpx
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from acr.common.time import utcnow
@@ -84,16 +86,17 @@ def _backoff_seconds(attempts: int) -> int:
 
 async def _record_attempt(
     db: AsyncSession,
-    row: IntegrationOutboxRecord,
     *,
+    outbox_id: uuid.UUID,
+    attempt_number: int,
     result: str,
     http_status: int | None,
     error: str | None,
 ) -> None:
     db.add(
         IntegrationDeliveryAttemptRecord(
-            outbox_id=row.id,
-            attempt_number=row.attempts,
+            outbox_id=outbox_id,
+            attempt_number=attempt_number,
             result=result,
             http_status=http_status,
             error=error,
@@ -102,25 +105,44 @@ async def _record_attempt(
     await db.flush()
 
 
-async def _apply_failure(db: AsyncSession, row: IntegrationOutboxRecord, exc: Exception) -> None:
+async def _apply_failure(db: AsyncSession, row: IntegrationOutboxRecord, exc: Exception) -> str:
+    """Record a failed delivery and commit. Returns the outcome string
+    ("dead_letter" or "failed"), captured BEFORE the commit: callers
+    tally from the return value and never re-read the row afterwards,
+    because a later rollback in the same session expires every instance
+    in it (rollback expires unconditionally, even with
+    expire_on_commit=False).
+    """
+    row_id = row.id
+    attempts = row.attempts
     http_status = getattr(exc, "http_status", None)
     retryable = getattr(exc, "retryable", True)
     row.last_error = str(exc)[:2000]
-    await _record_attempt(db, row, result="failure", http_status=http_status, error=row.last_error)
-    if not retryable or row.attempts >= max(1, settings.integrations_outbox_max_attempts):
+    await _record_attempt(
+        db,
+        outbox_id=row_id,
+        attempt_number=attempts,
+        result="failure",
+        http_status=http_status,
+        error=row.last_error,
+    )
+    if not retryable or attempts >= max(1, settings.integrations_outbox_max_attempts):
         row.status = "dead_letter"
+        outcome = "dead_letter"
         logger.error(
             "integration_delivery_dead_letter",
             integration=row.integration,
             event_type=row.event_type,
             reference=row.reference,
-            attempts=row.attempts,
+            attempts=attempts,
             error=row.last_error,
         )
     else:
         row.status = "pending"
-        row.next_attempt_at = utcnow() + timedelta(seconds=_backoff_seconds(row.attempts))
+        row.next_attempt_at = utcnow() + timedelta(seconds=_backoff_seconds(attempts))
+        outcome = "failed"
     await db.commit()
+    return outcome
 
 
 async def _apply_success(
@@ -128,14 +150,27 @@ async def _apply_success(
     row: IntegrationOutboxRecord,
     delivery_ref: dict | None,
     http_status: int | None = 200,
-) -> None:
+) -> str:
+    """Record a successful delivery and commit. Returns "delivered",
+    captured before the commit for the same reason as `_apply_failure`.
+    """
+    row_id = row.id
+    attempts = row.attempts
     row.status = "delivered"
     row.delivered_at = utcnow()
     row.last_error = None
     if delivery_ref is not None:
         row.delivery_ref = delivery_ref
-    await _record_attempt(db, row, result="success", http_status=http_status, error=None)
+    await _record_attempt(
+        db,
+        outbox_id=row_id,
+        attempt_number=attempts,
+        result="success",
+        http_status=http_status,
+        error=None,
+    )
     await db.commit()
+    return "delivered"
 
 
 async def _deliver_one(
@@ -161,41 +196,140 @@ async def _deliver_batch(
     rows: list[IntegrationOutboxRecord],
     client: httpx.AsyncClient,
     deliver_batch,
-) -> None:
+) -> list[str]:
     """Batched rows: one request carries many records (Sentinel Logs
     Ingestion, Splunk HEC).
 
-    Each row still gets its own attempt record and its own retry state —
-    batching changes the HTTP shape, never the evidence shape.
+    Rows arrive already claimed by `_claim_due` (status 'delivering',
+    attempt counter incremented). Each row still gets its own attempt
+    record and its own retry state — batching changes the HTTP shape,
+    never the evidence shape.
+
+    Returns one outcome string per row ("delivered" / "failed" /
+    "dead_letter"). Row ids are captured up front and each row is
+    re-fetched by id before its outcome is applied: applying one row's
+    outcome commits, and a rollback anywhere in the drain expires every
+    instance held by the session, so the instances passed in cannot be
+    trusted across iterations.
     """
-    for row in rows:
-        row.status = "delivering"
-        row.attempts += 1
-    await db.commit()
+    row_ids = [row.id for row in rows]
     try:
         await deliver_batch(rows, client)
     except Exception as exc:
-        for row in rows:
-            await _apply_failure(db, row, exc)
-        return
-    for row in rows:
-        await _apply_success(db, row, None)
+        outcomes = []
+        for row_id in row_ids:
+            row = await db.get(IntegrationOutboxRecord, row_id)
+            if row is None:
+                continue
+            outcomes.append(await _apply_failure(db, row, exc))
+        return outcomes
+    outcomes = []
+    for row_id in row_ids:
+        row = await db.get(IntegrationOutboxRecord, row_id)
+        if row is None:
+            continue
+        outcomes.append(await _apply_success(db, row, None))
+    return outcomes
 
 
 async def _deliver_sentinel_batch(
     db: AsyncSession, rows: list[IntegrationOutboxRecord], client: httpx.AsyncClient
-) -> None:
+) -> list[str]:
     from acr.integrations import sentinel
 
-    await _deliver_batch(db, rows, client, sentinel.deliver_batch)
+    return await _deliver_batch(db, rows, client, sentinel.deliver_batch)
 
 
 async def _deliver_splunk_batch(
     db: AsyncSession, rows: list[IntegrationOutboxRecord], client: httpx.AsyncClient
-) -> None:
+) -> list[str]:
     from acr.integrations import splunk
 
-    await _deliver_batch(db, rows, client, splunk.deliver_batch)
+    return await _deliver_batch(db, rows, client, splunk.deliver_batch)
+
+
+async def _refetch(db: AsyncSession, ids: list[uuid.UUID]) -> list[IntegrationOutboxRecord]:
+    """Materialize rows by id, in id order, as fresh committed state.
+
+    populate_existing overwrites any expired (or stale) copies the
+    session already holds — after any rollback every instance in the
+    session is expired, and reading an attribute off an expired
+    instance outside an awaited SQLAlchemy call raises MissingGreenlet.
+    """
+    if not ids:
+        return []
+    rows = list(
+        (
+            await db.execute(
+                select(IntegrationOutboxRecord)
+                .where(IntegrationOutboxRecord.id.in_(ids))
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_id = {row.id: row for row in rows}
+    return [by_id[row_id] for row_id in ids if row_id in by_id]
+
+
+async def _claim_due(db: AsyncSession, limit: int = 500) -> list[IntegrationOutboxRecord]:
+    """Atomically claim due pending rows for this drainer.
+
+    A single conditional UPDATE flips due rows to 'delivering' and
+    increments their attempt counter; the id subquery takes
+    FOR UPDATE SKIP LOCKED on Postgres so concurrent drainers (the
+    gateway runs multiple uvicorn workers, each with its own lifespan
+    loop) partition the due set instead of claiming the same row twice
+    — a row is delivered by exactly one drainer. Claiming is committed
+    before any delivery starts, so a claimed row is invisible to other
+    drainers even while its HTTP call is still in flight.
+    """
+    now = utcnow()
+    due_ids = (
+        select(IntegrationOutboxRecord.id)
+        .where(
+            IntegrationOutboxRecord.status == "pending",
+            IntegrationOutboxRecord.next_attempt_at <= now,
+        )
+        .order_by(IntegrationOutboxRecord.created_at.asc())
+        .limit(limit)
+    )
+    if db.get_bind().dialect.name == "postgresql":
+        due_ids = due_ids.with_for_update(skip_locked=True)
+    result = await db.execute(
+        update(IntegrationOutboxRecord)
+        .where(
+            IntegrationOutboxRecord.id.in_(due_ids.scalar_subquery()),
+            IntegrationOutboxRecord.status == "pending",
+        )
+        .values(
+            status="delivering",
+            attempts=IntegrationOutboxRecord.attempts + 1,
+        )
+        .returning(IntegrationOutboxRecord.id)
+        .execution_options(synchronize_session=False)
+    )
+    claimed_ids = list(result.scalars().all())
+    await db.commit()
+    if not claimed_ids:
+        return []
+    rows = list(
+        (
+            await db.execute(
+                select(IntegrationOutboxRecord)
+                .where(IntegrationOutboxRecord.id.in_(claimed_ids))
+                # The caller's session may already hold these instances
+                # in an expired state (any rollback expires them); the
+                # claim must hand the drainer the committed truth.
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    rows.sort(key=lambda r: r.created_at)
+    return rows
 
 
 async def process_outbox_once(
@@ -211,61 +345,64 @@ async def process_outbox_once(
         client = httpx.AsyncClient(timeout=10.0)
     counts = {"delivered": 0, "failed": 0, "dead_letter": 0}
     try:
-        now = utcnow()
-        result = await db.execute(
-            select(IntegrationOutboxRecord)
-            .where(
-                IntegrationOutboxRecord.status == "pending",
-                IntegrationOutboxRecord.next_attempt_at <= now,
-            )
-            .order_by(IntegrationOutboxRecord.created_at.asc())
-            .limit(500)
-        )
-        due = list(result.scalars().all())
+        due = await _claim_due(db)
+        # Capture plain values while the claimed instances are fresh,
+        # and never read ORM attributes off `due` again: the per-row
+        # rollback in the loop below expires EVERY instance in the
+        # session (rollback expires unconditionally, even with
+        # expire_on_commit=False), and touching an expired instance
+        # outside an awaited SQLAlchemy call raises MissingGreenlet.
+        # Everything downstream works from ids and re-fetches the row
+        # it is about to touch.
+        due_ids = [(row.id, row.integration, row.event_type) for row in due]
+        sentinel_ids = [row_id for row_id, integration, _ in due_ids if integration == "sentinel"]
+        splunk_ids = [row_id for row_id, integration, _ in due_ids if integration == "splunk"]
+        other_entries = [
+            (row_id, event_type)
+            for row_id, integration, event_type in due_ids
+            if integration not in ("sentinel", "splunk")
+        ]
+        # Causal order within the drain: an approval_decided delivery
+        # updates the message its approval_requested row posted, so
+        # when both are claimed in the same drain the original must be
+        # delivered first — otherwise the update spuriously burns a
+        # retry cycle on "not yet delivered". The claim's created_at
+        # ordering cannot guarantee this (rows enqueued in the same
+        # second tie, and the tie-break is arbitrary), so order the
+        # phases explicitly. Stable sort: claim order is preserved
+        # within each phase.
+        _phase = {"approval_requested": 0, "approval_decided": 2}
+        other_entries.sort(key=lambda entry: _phase.get(entry[1], 1))
+        other_ids = [row_id for row_id, _ in other_entries]
 
-        def _tally(batch: list[IntegrationOutboxRecord]) -> None:
-            for row in batch:
-                if row.status == "delivered":
-                    counts["delivered"] += 1
-                elif row.status == "dead_letter":
-                    counts["dead_letter"] += 1
-                else:
-                    counts["failed"] += 1
-
-        sentinel_rows = [r for r in due if r.integration == "sentinel"]
-        splunk_rows = [r for r in due if r.integration == "splunk"]
-        other_rows = [r for r in due if r.integration not in ("sentinel", "splunk")]
         batch_size = max(1, settings.sentinel_batch_max)
-        for start in range(0, len(sentinel_rows), batch_size):
-            batch = sentinel_rows[start : start + batch_size]
-            await _deliver_sentinel_batch(db, batch, client)
-            _tally(batch)
+        for start in range(0, len(sentinel_ids), batch_size):
+            batch = await _refetch(db, sentinel_ids[start : start + batch_size])
+            for outcome in await _deliver_sentinel_batch(db, batch, client):
+                counts[outcome] += 1
         splunk_batch_size = max(1, settings.splunk_hec_batch_max)
-        for start in range(0, len(splunk_rows), splunk_batch_size):
-            batch = splunk_rows[start : start + splunk_batch_size]
-            await _deliver_splunk_batch(db, batch, client)
-            _tally(batch)
+        for start in range(0, len(splunk_ids), batch_size):
+            batch = await _refetch(db, splunk_ids[start : start + splunk_batch_size])
+            for outcome in await _deliver_splunk_batch(db, batch, client):
+                counts[outcome] += 1
 
-        for row in other_rows:
-            row.status = "delivering"
-            row.attempts += 1
-            await db.commit()
+        for row_id in other_ids:
+            row = await db.get(IntegrationOutboxRecord, row_id)
+            if row is None:
+                continue
             try:
                 await _deliver_one(db, row, client)
                 counts["delivered"] += 1
             except Exception as exc:
                 await db.rollback()
-                # The claim (status + attempt increment) was committed
-                # before delivery, so it survives the rollback; reload
-                # the row and record the failed attempt against it.
-                row = await db.get(IntegrationOutboxRecord, row.id)
+                # The rollback expired every instance in the session,
+                # including this row; re-fetch before recording the
+                # failed attempt against it.
+                row = await db.get(IntegrationOutboxRecord, row_id)
                 if row is None:
                     continue
-                await _apply_failure(db, row, exc)
-                if row.status == "dead_letter":
-                    counts["dead_letter"] += 1
-                else:
-                    counts["failed"] += 1
+                outcome = await _apply_failure(db, row, exc)
+                counts[outcome] += 1
         return counts
     finally:
         if owns_client:
