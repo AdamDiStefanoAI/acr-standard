@@ -19,6 +19,9 @@ import pytest
 from acr.common.errors import PolicyEngineError
 from acr.pillar2_policy.engine import evaluate_policy
 from acr.policy_studio.core_bundle import (
+    _expand_symlink_chain,
+    _same_file,
+    _windows_canonical_form,
     assemble_bundle,
     core_identity,
     core_sources,
@@ -191,6 +194,39 @@ async def test_version_qualified_endpoint_rejects_mismatch(async_client):
 
 
 OPA = os.environ.get("OPA_BINARY") or shutil.which("opa")
+
+
+def _eval_policy_directory(root: Path, input_path: Path, archive_path: Path) -> dict:
+    """Evaluate a legacy policy directory's exact bytes with real OPA.
+
+    The directory is packed into a bundle archive and evaluated with -b
+    because OPA's directory loader walks the filesystem with platform-native
+    path forms and the Windows build rejects directories the Linux build
+    accepts (opa eval -d exits 2 on windows-latest for the directories used
+    below, while the same bytes evaluate cleanly from an archive). The tar
+    transport evaluates identical bytes on every platform — the same pattern
+    as the other real-OPA checks in this module — and the document paths of
+    loose files are preserved (a root-level data.json still lands at data.*).
+    OPA's stderr is included in the assertion so a loader rejection is
+    diagnosable from CI output instead of surfacing as a bare exit code.
+    """
+    with tarfile.open(archive_path, "w:gz") as bundle:
+        for candidate in sorted(root.rglob("*")):
+            if candidate.is_file():
+                payload = candidate.read_bytes()
+                info = tarfile.TarInfo(candidate.relative_to(root).as_posix())
+                info.size = len(payload)
+                bundle.addfile(info, io.BytesIO(payload))
+    process = subprocess.run(
+        [OPA, "eval", "-b", str(archive_path), "-i", str(input_path), "--format=json", "data.acr"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert process.returncode == 0, (
+        f"OPA eval exited {process.returncode}: {process.stderr.strip()[:2000]}"
+    )
+    return json.loads(process.stdout)["result"][0]["expressions"][0]["value"]
 
 
 @pytest.mark.skipif(not OPA, reason="set OPA_BINARY to run real OPA checks")
@@ -374,26 +410,23 @@ def test_real_opa_data_backed_deny_cannot_silently_become_allow(tmp_path):
     root.mkdir()
     for name, contents in core_sources().items():
         (root / name).write_bytes(contents)
-    (root / "custom.rego").write_text(
-        "package acr\nimport future.keywords.in\nimport future.keywords.contains\n"
-        "import future.keywords.if\n"
-        'deny contains "operator blocklist" if { input.action.tool_name in data.acr.blocked_tools }'
+    # write_bytes everywhere: write_text would translate newlines and use the
+    # locale encoding on Windows, so the bytes OPA evaluates must not depend
+    # on the platform the test runs on.
+    (root / "custom.rego").write_bytes(
+        b"package acr\nimport future.keywords.in\nimport future.keywords.contains\n"
+        b"import future.keywords.if\n"
+        b'deny contains "operator blocklist" if { input.action.tool_name in data.acr.blocked_tools }'
     )
-    (root / "data.json").write_text('{"acr": {"blocked_tools": ["shell"]}}')
+    (root / "data.json").write_bytes(b'{"acr": {"blocked_tools": ["shell"]}}')
     request = {
         "agent": {"allowed_tools": ["shell"], "forbidden_tools": [], "boundaries": {}},
         "action": {"tool_name": "shell", "parameters": {}},
         "context": {},
     }
     input_path = tmp_path / "input.json"
-    input_path.write_text(json.dumps(request))
-    process = subprocess.run(
-        [OPA, "eval", "-d", str(root), "-i", str(input_path), "--format=json", "data.acr"],
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    value = json.loads(process.stdout)["result"][0]["expressions"][0]["value"]
+    input_path.write_bytes(json.dumps(request).encode())
+    value = _eval_policy_directory(root, input_path, tmp_path / "legacy.tar.gz")
     assert "operator blocklist" in value["deny"]
     assert value["allow"] is False
     # The managed path refuses the entire input, rather than dropping data.json
@@ -463,27 +496,21 @@ def test_real_opa_test_suffix_runtime_deny_cannot_silently_become_allow(tmp_path
     root.mkdir()
     for name, contents in core_sources().items():
         (root / name).write_bytes(contents)
-    (root / "customer_override_test.rego").write_text(
-        "package acr\nimport future.keywords.contains\nimport future.keywords.if\n"
-        'deny contains "operator safeguard" if { input.action.tool_name == "shell" }'
+    (root / "customer_override_test.rego").write_bytes(
+        b"package acr\nimport future.keywords.contains\nimport future.keywords.if\n"
+        b'deny contains "operator safeguard" if { input.action.tool_name == "shell" }'
     )
     input_path = tmp_path / "input.json"
-    input_path.write_text(
+    input_path.write_bytes(
         json.dumps(
             {
                 "agent": {"allowed_tools": ["shell"], "forbidden_tools": [], "boundaries": {}},
                 "action": {"tool_name": "shell", "parameters": {}},
                 "context": {},
             }
-        )
+        ).encode()
     )
-    process = subprocess.run(
-        [OPA, "eval", "-d", str(root), "-i", str(input_path), "--format=json", "data.acr"],
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    value = json.loads(process.stdout)["result"][0]["expressions"][0]["value"]
+    value = _eval_policy_directory(root, input_path, tmp_path / "legacy.tar.gz")
     assert "operator safeguard" in value["deny"]
     assert value["allow"] is False
     with pytest.raises(ValueError, match="test-suffix"):
@@ -535,3 +562,207 @@ def test_projection_refuses_unmapped_backing_policy(tmp_path):
     (tmp_path / "..data").symlink_to("..2026", target_is_directory=True)
     with pytest.raises(ValueError, match="Unmapped Kubernetes"):
         extension_files(tmp_path)
+
+
+def test_same_file_compares_stat_identity_not_path_strings(tmp_path):
+    # The backing-file mapping check must recognize the same file reached
+    # directly and through the projection symlink chain on every platform;
+    # resolved path strings are not a portable identity (Windows resolve()
+    # can return different string forms for one file).
+    target = tmp_path / "real.rego"
+    target.write_text("package acr\n")
+    direct = tmp_path / "alias.rego"
+    direct.symlink_to("real.rego")
+    other = tmp_path / "other.rego"
+    other.write_text("package acr\n")
+    assert _same_file(direct, target)
+    assert _same_file(target, target)
+    assert not _same_file(other, target)
+    assert not _same_file(tmp_path / "missing.rego", target)
+
+
+def test_projection_refuses_backing_that_maps_to_a_different_file(tmp_path):
+    backing = tmp_path / "..2026"
+    backing.mkdir()
+    (backing / "custom.rego").write_text('package acr\ndeny contains "backing" if { true }')
+    (tmp_path / "other.rego").write_text('package acr\ndeny contains "other" if { true }')
+    (tmp_path / "..data").symlink_to("..2026", target_is_directory=True)
+    # The visible entry exists but resolves to a different file than the
+    # backing copy, so the backing copy is not a verified duplicate.
+    (tmp_path / "custom.rego").symlink_to("other.rego")
+    with pytest.raises(ValueError, match="Unmapped Kubernetes"):
+        extension_files(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "first,second",
+    [
+        # Extended-length prefix on one side only (the resolve() divergence
+        # seen when one side is reached through the projection symlink chain).
+        (r"\\?\C:\x\..2026\f.rego", r"C:\x\..2026\f.rego"),
+        (r"\\?\UNC\server\share\..2026\f.rego", r"\\server\share\..2026\f.rego"),
+        # Case and separator spellings of one file.
+        (r"C:\X\Sub\F.REGO", r"c:\x\sub\f.rego"),
+        ("C:/x/..2026/f.rego", r"C:\x\..2026\f.rego"),
+        # A real traversal segment collapses identically on both sides.
+        (r"\\?\C:\x\..\2026\f.rego", r"C:\2026\f.rego"),
+    ],
+)
+def test_windows_canonical_form_unifies_spellings_of_one_file(first, second):
+    assert _windows_canonical_form(first) == _windows_canonical_form(second)
+
+
+@pytest.mark.parametrize(
+    "first,second",
+    [
+        (r"C:\x\..2026\f.rego", r"C:\x\..2026\g.rego"),
+        (r"\\?\C:\x\..2026\f.rego", r"C:\x\other\f.rego"),
+        (r"C:\x\..2026\f.rego", r"D:\x\..2026\f.rego"),
+    ],
+)
+def test_windows_canonical_form_keeps_different_files_apart(first, second):
+    assert _windows_canonical_form(first) != _windows_canonical_form(second)
+
+
+def _stat_unavailable(first, second):
+    raise OSError("stat identity unavailable (simulated)")
+
+
+def test_same_file_falls_back_to_canonical_paths_when_stat_fails(tmp_path, monkeypatch):
+    # Simulate the Windows failure mode where the stat leg cannot answer:
+    # identity must still be decided, by canonical resolved location.
+    target = tmp_path / "real.rego"
+    target.write_text("package acr\n")
+    direct = tmp_path / "alias.rego"
+    direct.symlink_to("real.rego")
+    other = tmp_path / "other.rego"
+    other.write_text("package acr\n")
+    monkeypatch.setattr(os.path, "samefile", _stat_unavailable)
+    assert _same_file(direct, target)
+    assert not _same_file(other, target)
+    assert not _same_file(tmp_path / "missing.rego", target)
+
+
+def test_projection_mapping_survives_stat_failure(tmp_path, monkeypatch):
+    # The exact projected layout of the configmap tests, with the stat leg
+    # sabotaged: the mapping must still verify via canonical paths, so the
+    # backing copy is deduplicated instead of reported unmapped.
+    root = tmp_path / "mount"
+    backing = root / "..2026"
+    backing.mkdir(parents=True)
+    (backing / "custom.rego").write_text('package acr\ndeny contains "custom" if { true }')
+    (root / "..data").symlink_to("..2026", target_is_directory=True)
+    (root / "custom.rego").symlink_to("..data/custom.rego")
+    monkeypatch.setattr(os.path, "samefile", _stat_unavailable)
+    assert list(extension_files(root)) == ["bundle/extensions/custom.rego"]
+
+
+def _patch_windows_projection_chain(monkeypatch, *, data_target="..2026"):
+    """Simulate the Windows projection chain with a link table.
+
+    Reproduces the environment the round-2 CI run diagnosed: Path.resolve()
+    expanded the visible file symlink (mount/custom.rego ->
+    mount/..data/custom.rego) but not the intermediate ..data directory
+    symlink, and os.path.samefile could not equate the two spellings. The
+    fakes give the manual chain expander a two-hop chain to walk (visible
+    file -> ..data -> timestamped backing directory); any path outside the
+    table behaves as it does on the real filesystem.
+
+    Table keys and lookups are compared in separator-normalized form: on
+    Windows the expander looks prefixes up as str(WindowsPath), which
+    spells them with backslashes, so keying the table by the forward-slash
+    spellings alone meant the fakes never matched there and the expander
+    saw no links at all (the round-3 CI failure of these mocked tests,
+    which passed on Linux where str(Path) uses forward slashes).
+    """
+
+    def key(path):
+        return str(path).replace("\\", "/")
+
+    links = {
+        "C:/mount/custom.rego": "..data/custom.rego",
+        "C:/mount/..data": data_target,
+    }
+    real_islink = os.path.islink
+
+    def fake_islink(path):
+        return key(path) in links or real_islink(path)
+
+    def fake_readlink(path):
+        try:
+            return links[key(path)]
+        except KeyError:
+            raise OSError("not a simulated link") from None
+
+    monkeypatch.setattr(os.path, "islink", fake_islink)
+    monkeypatch.setattr(os, "readlink", fake_readlink)
+
+
+def test_expand_symlink_chain_walks_the_windows_projection_chain(monkeypatch):
+    _patch_windows_projection_chain(monkeypatch)
+    assert _expand_symlink_chain(Path("C:/mount/custom.rego")) == Path(
+        "C:/mount/..2026/custom.rego"
+    )
+    # The backing path itself contains no links and is returned unchanged.
+    assert _expand_symlink_chain(Path("C:/mount/..2026/custom.rego")) == Path(
+        "C:/mount/..2026/custom.rego"
+    )
+
+
+def test_same_file_expands_the_windows_projection_chain(monkeypatch):
+    # With the stat leg sabotaged, identity must come from the manually
+    # expanded chain: the visible file's chain terminates exactly at the
+    # backing file.
+    _patch_windows_projection_chain(monkeypatch)
+    monkeypatch.setattr(os.path, "samefile", _stat_unavailable)
+    visible = Path("C:/mount/custom.rego")
+    backing = Path("C:/mount/..2026/custom.rego")
+    assert _same_file(visible, backing)
+    assert _same_file(backing, visible)
+
+
+def test_same_file_rejects_a_chain_terminating_at_a_different_file(monkeypatch):
+    # The visible chain terminates in a different backing directory than
+    # the file under test, so expansion must not equate them.
+    _patch_windows_projection_chain(monkeypatch, data_target="..2027")
+    monkeypatch.setattr(os.path, "samefile", _stat_unavailable)
+    assert not _same_file(Path("C:/mount/custom.rego"), Path("C:/mount/..2026/custom.rego"))
+
+
+def test_windows_projection_chain_table_matches_backslash_spellings(monkeypatch):
+    # On Windows the chain expander looks prefixes up as str(WindowsPath),
+    # spelled with backslashes; the simulated link table must match those
+    # spellings, not only the forward-slash forms it is defined with. From
+    # Linux the backslash spellings are fed through the fakes directly.
+    _patch_windows_projection_chain(monkeypatch)
+    assert os.path.islink(r"C:\mount\custom.rego")
+    assert os.path.islink(r"C:\mount\..data")
+    assert os.readlink(r"C:\mount\custom.rego") == "..data/custom.rego"
+    assert os.readlink(r"C:\mount\..data") == "..2026"
+    with pytest.raises(OSError):
+        os.readlink(r"C:\mount\..2026")
+
+
+def test_projection_survives_visible_entry_stat_failure(tmp_path, monkeypatch):
+    # Simulate the Windows failure mode where stat on the visible symlink
+    # as presented reports "not a file" (its target chain passes through
+    # the ..data directory symlink) even though the file it denotes is a
+    # regular file: classification is decided on the fully expanded path,
+    # so the projected layout is still accepted instead of refused as an
+    # unsupported entry.
+    root = tmp_path / "mount"
+    backing = root / "..2026"
+    backing.mkdir(parents=True)
+    (backing / "custom.rego").write_text('package acr\ndeny contains "custom" if { true }')
+    (root / "..data").symlink_to("..2026", target_is_directory=True)
+    visible = root / "custom.rego"
+    visible.symlink_to("..data/custom.rego")
+    real_is_file = Path.is_file
+
+    def flaky_is_file(self):
+        if self == visible:
+            return False
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", flaky_is_file)
+    assert list(extension_files(root)) == ["bundle/extensions/custom.rego"]

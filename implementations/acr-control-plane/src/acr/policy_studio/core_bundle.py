@@ -11,6 +11,7 @@ import gzip
 import hashlib
 import io
 import json
+import ntpath
 import os
 import re
 import tarfile
@@ -57,6 +58,108 @@ def managed_core_files() -> dict[str, bytes]:
     return result
 
 
+def _windows_canonical_form(text: str) -> str:
+    """Canonical string form of a resolved Windows path, for comparison.
+
+    Path.resolve() on Windows does not promise one string form per file: a
+    path reached through the Kubernetes projection symlink chain can come
+    back with an extended-length prefix (\\\\?\\C:\\... or \\\\?\\UNC\\...)
+    while the same file reached directly comes back plain, and the two
+    spellings then compare unequal as strings. Strip the extended-length
+    prefixes and normalize with ntpath semantics (dot segments collapsed,
+    separators unified, case folded) so equivalent spellings of one file
+    produce one form. ntpath is used explicitly so this transformation is
+    identical on every host and unit-testable from Linux.
+    """
+    if text.startswith("\\\\?\\UNC\\"):
+        text = "\\\\" + text[len("\\\\?\\UNC\\") :]
+    elif text.startswith("\\\\?\\"):
+        text = text[len("\\\\?\\") :]
+    return ntpath.normcase(ntpath.normpath(text))
+
+
+_MAX_SYMLINK_EXPANSIONS = 40
+
+
+def _expand_symlink_chain(path: Path) -> Path:
+    """Expand every symlink component of a path by walking it manually.
+
+    Path.resolve() cannot be trusted to do this on every platform: on
+    Windows it expanded the visible file symlink of the Kubernetes
+    projection layout (mount\\custom.rego -> mount\\..data\\custom.rego)
+    but left the intermediate ..data directory symlink unexpanded, so one
+    file produced two different resolved strings (..data vs ..2026) and
+    the backing-file identity check failed. Walk the path prefix by
+    prefix instead: whenever a prefix is a symlink, splice in its target
+    (a relative target resolves against the link's parent directory) and
+    rescan from the start of the spliced portion, so a chain of links
+    (visible file -> ..data -> timestamped backing directory -> file)
+    expands fully on every platform. The expansion cap bounds symlink
+    loops; a component whose target cannot be read is left as-is.
+    """
+    parts = list(path.parts)
+    expansions = 0
+    index = 0
+    while index < len(parts):
+        candidate = Path(*parts[: index + 1])
+        if not os.path.islink(candidate):
+            index += 1
+            continue
+        try:
+            target = os.readlink(candidate)
+        except OSError:
+            index += 1
+            continue
+        expansions += 1
+        if expansions > _MAX_SYMLINK_EXPANSIONS:
+            break
+        target_path = Path(target)
+        if not target_path.is_absolute():
+            target_path = Path(*parts[:index]) / target_path
+        parts = list(target_path.parts) + parts[index + 1 :]
+        index = 0
+    return Path(*parts)
+
+
+def _canonical_path(path: Path) -> str:
+    """The fully expanded path as a comparable string, canonicalized per OS.
+
+    Symlink components are expanded by _expand_symlink_chain rather than
+    Path.resolve(), whose expansion of intermediate directory symlinks is
+    unreliable on Windows (see _expand_symlink_chain); resolve() is applied
+    to the expanded path only to absolutize it and collapse any dot
+    segments a relative link target introduced, in a chain-free path where
+    lexical and physical normalization agree.
+    """
+    text = str(_expand_symlink_chain(path).resolve())
+    if os.name == "nt":
+        return _windows_canonical_form(text)
+    return text
+
+
+def _same_file(first: Path, second: Path) -> bool:
+    """Whether two paths name the same filesystem object.
+
+    Identity is accepted from either of two independent signals, because on
+    Windows each can fail on its own for the Kubernetes projection layout
+    (a visible symlink -> ..data -> timestamped backing directory): the
+    stat-based check can raise or disagree across the symlink chain, and
+    resolved path strings can differ in form for one file. The signals are
+    stat identity (device + inode/file index) and equality of the canonical
+    paths, where canonicalization expands every symlink component manually
+    (see _expand_symlink_chain) before the per-OS form normalization (see
+    _windows_canonical_form). Two genuinely different files satisfy
+    neither: their stat identities differ and their expanded locations
+    differ.
+    """
+    try:
+        if os.path.samefile(first, second):
+            return True
+    except OSError:
+        pass
+    return _canonical_path(first) == _canonical_path(second)
+
+
 def validate_extension(source: str, *, name: str) -> None:
     if _RESERVED.search(source):
         raise ValueError(f"Extension {name} uses reserved core identity names")
@@ -70,7 +173,11 @@ def validate_extension(source: str, *, name: str) -> None:
 def extension_files(directory: str | Path | None) -> dict[str, bytes]:
     if directory is None:
         return {}
-    root = Path(directory)
+    # Lexically normalize the root as given (unified separators, no dot
+    # segments) so the relative-path classification below is computed from the
+    # same canonical form on every platform; entry paths come from rglob over
+    # this root, so they inherit the normalization.
+    root = Path(os.path.normpath(directory))
     if not root.is_dir():
         raise ValueError(f"Extension directory does not exist: {root}")
     sources = core_sources()
@@ -100,11 +207,24 @@ def extension_files(directory: str | Path | None) -> dict[str, bytes]:
             )
             if path != root / "..data" and not recognized_backing:
                 raise ValueError(f"Unrecognized hidden operator policy entry: {path}")
-        if path.is_dir():
+        # Classification follows the projection chain to the entry's real
+        # location. "Is this a directory / a regular file" is a question
+        # about the file the entry denotes, so it is asked of the fully
+        # expanded path: stat on the entry as presented can fail on Windows
+        # for a legitimate projected entry (a visible file symlink whose
+        # target passes through the ..data directory symlink), which would
+        # refuse the entry before the checks below ever run. Predicates
+        # about the entry as presented stay on the raw path: the escape
+        # check above (the resolved chain must not leave the root), the
+        # hidden-entry classification, and the is_symlink checks that
+        # detect the links themselves. The payload is likewise read from
+        # the expanded location, the same file by construction.
+        expanded = _expand_symlink_chain(path)
+        if expanded.is_dir():
             if path.is_symlink() and not (projected and path == root / "..data"):
                 raise ValueError(f"Policy directory symlink is not supported: {path}")
             continue
-        if not path.is_file():
+        if not expanded.is_file():
             raise ValueError(f"Unsupported operator policy entry: {path}")
         if path.name == ".gitkeep":
             continue
@@ -122,10 +242,21 @@ def extension_files(directory: str | Path | None) -> dict[str, bytes]:
             )
         if is_backing:
             visible = root.joinpath(*relative.parts[1:])
-            if not visible.is_file() or visible.resolve() != path.resolve():
-                raise ValueError(f"Unmapped Kubernetes policy backing file: {path}")
+            # Identity is the whole check: _same_file accepts only the same
+            # filesystem object (by stat) or the same canonical resolved
+            # location, so a missing or different visible entry still refuses.
+            # Gating on visible.is_file() first would short-circuit the
+            # identity proof on platforms where stat follows the projection
+            # symlink chain differently than resolve() does.
+            if not _same_file(visible, path):
+                raise ValueError(
+                    f"Unmapped Kubernetes policy backing file: {path} "
+                    f"(visible counterpart {visible} canonicalizes to "
+                    f"{_canonical_path(visible)!r}, backing file to "
+                    f"{_canonical_path(path)!r})"
+                )
             continue  # Only the verified backing copy of a visible file is deduplicated.
-        payload = path.read_bytes()
+        payload = expanded.read_bytes()
         if path.name in CORE_FILES:
             if payload != sources[path.name]:
                 raise ValueError(
