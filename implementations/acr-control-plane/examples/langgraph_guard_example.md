@@ -7,24 +7,23 @@ search or real email is sent.
 
 ## Install
 
-> **Security limitation (2026-10-25):** the optional legacy LangChain/LangGraph
-> dependency family below is **not audit-clean**. Do not install it for production
-> evaluation pending a separately reviewed dependency migration. The SDK/base-package
-> security fix does not remediate these optional dependencies. The base
-> `pip install acr-control-plane` path does not install them. This command is
-> retained only for isolated, disposable regression reproduction without secrets
-> or untrusted inputs.
+> **Verification status (2026-11-23, v1.5.0 WS5):** the guard and this
+> example are verified against langchain-core 1.8.4 and langgraph 1.2.24;
+> `pip-audit` reports no known vulnerabilities for this dependency family.
+> (The 2026-10-25 not-audit-clean warning referred to the legacy pre-1.0
+> family below and no longer applies.) The base
+> `pip install acr-control-plane` path does not install them.
 
 From `implementations/acr-control-plane/`, in your activated development virtual
 environment:
 
 ```bash
-python -m pip install -e '.[dev,integrations]' 'langgraph>=0.3,<0.7'
+python -m pip install -e '.[dev,integrations]' 'langgraph>=1.2,<2.0'
 ```
 
-This example uses the repository's legacy LangChain Core 0.3 integration range.
-The LangGraph bound keeps installation within the matching pre-1.0 framework
-family; it is not a claim of compatibility with every newer LangGraph release.
+The `integrations` extra pins the verified LangChain Core 1.x line; the
+LangGraph bound matches the release the WS5 verification pass ran against
+(streaming, async dispatch, and retry paths included).
 
 ## Run with a local ACR gateway
 
