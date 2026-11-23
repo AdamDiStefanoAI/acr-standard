@@ -124,7 +124,7 @@ reports liveness and whether the catalog is pinned.
 - **Compose:** the `acr-mcp-gateway` service in `docker-compose.yml`
   is profile-gated (`--profile mcp-gateway`) because the upstream is
   deployment-specific. `docker-compose.mcp-gateway-test.yml` adds a
-  fixture MCP server for validation stacks and red-team category 3.
+  fixture MCP server for validation stacks and red-team category 11.
 - **Kubernetes:** `deploy/k8s/base/mcp-gateway-deployment.yaml` and
   `mcp-gateway-service.yaml` (in the base kustomization). The operator
   key comes from the existing `acr-gateway-secret`.
@@ -144,5 +144,5 @@ Deployment notes:
   streamable-HTTP bridge if they must be proxied.
 - Red-team coverage: category 1 probes replayed through the proxy
   deny identically to the direct path (pytest parity suite), and
-  harness category 3 covers poisoning, cross-server confusion, and
+  harness category 11 covers poisoning, cross-server confusion, and
   oversized responses against a live stack.
