@@ -49,7 +49,7 @@ jobs:
           mkdir -p contributor-evidence
           git rev-parse HEAD > contributor-evidence/revision.txt
           python --version > contributor-evidence/python-version.txt
-          python -m pip install -e '.[dev]' openai-agents==0.24.0
+          python -m pip install -e '.[dev]' openai-agents==0.25.0
           python -m pip freeze > contributor-evidence/dependencies.txt
           python -c 'import agents; from importlib.metadata import version; assert version("openai-agents") == "0.24.0"'
       - name: Require offline safety and real SDK dispatch tests without skips
