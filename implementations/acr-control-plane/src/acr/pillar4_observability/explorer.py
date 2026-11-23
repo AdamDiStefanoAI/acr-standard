@@ -47,6 +47,7 @@ class DecisionSummary(BaseModel):
     correlation_id: str
     agent_id: str
     policy_id: str
+    bundle_hash: str | None
     decision: str
     enforcement_mode: str
     reason: str | None
@@ -77,7 +78,8 @@ class DecisionChain(BaseModel):
     manifest_link: ChainLink
     retained_input: dict[str, Any] | None
     # What the decision rows themselves record, plus the bundle identity
-    # when an approval's authorization snapshot carries one.
+    # from an approval's authorization snapshot when one carries it, or
+    # the bundle hash stamped on the decision rows (migration 0021).
     policy_ids: list[str]
     policy_bundle_identifier: dict[str, Any] | None
     policy_link: ChainLink
@@ -97,6 +99,7 @@ def _summary(record: PolicyDecisionRecord) -> DecisionSummary:
         correlation_id=record.correlation_id,
         agent_id=record.agent_id,
         policy_id=record.policy_id,
+        bundle_hash=record.bundle_hash,
         decision=record.decision,
         enforcement_mode=record.enforcement_mode,
         reason=record.reason,
@@ -309,15 +312,35 @@ async def get_decision_chain(
             detail="Policy bundle identity from the approval authorization snapshot.",
         )
     else:
-        policy_link = ChainLink(
-            status="absent",
-            detail=(
-                "Decision rows record policy_id only; the policy bundle "
-                "identity is recorded on approval authorization snapshots, "
-                "and this action has none carrying one."
-            ),
-        )
-        missing.append("policy_bundle_identifier")
+        # Decision rows recorded since migration 0021 carry the hash of
+        # the bundle that produced them, stamped at §18 recording time.
+        stamped_hashes = sorted({d.bundle_hash for d in decisions if d.bundle_hash})
+        if stamped_hashes:
+            bundle_identifier = (
+                {"bundle_sha256": stamped_hashes[0]}
+                if len(stamped_hashes) == 1
+                else {"bundle_sha256": stamped_hashes}
+            )
+            policy_link = ChainLink(
+                status="present",
+                detail=(
+                    "Policy bundle hash stamped on the decision rows at "
+                    "recording time (the WS2 bundle derivation: sha256 "
+                    "over the active runtime bundle archive)."
+                ),
+            )
+        else:
+            policy_link = ChainLink(
+                status="absent",
+                detail=(
+                    "These decision rows carry no bundle hash (recorded "
+                    "before bundle-hash stamping, or the bundle could "
+                    "not be rebuilt at recording time), and no approval "
+                    "authorization snapshot carries a policy identity "
+                    "for this action."
+                ),
+            )
+            missing.append("policy_bundle_identifier")
 
     # ── Approval + execution receipt ──────────────────────────────────────
     approval_dict: dict[str, Any] | None = None

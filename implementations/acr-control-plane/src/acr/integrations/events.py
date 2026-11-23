@@ -257,6 +257,7 @@ async def enqueue_sentinel_decisions(
                     reason=record.reason,
                     sequence=record.sequence,
                     latency_ms=record.latency_ms,
+                    bundle_hash=record.bundle_hash,
                 )
             },
         )

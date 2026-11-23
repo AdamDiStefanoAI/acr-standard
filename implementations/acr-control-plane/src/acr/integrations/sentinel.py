@@ -37,6 +37,7 @@ def decision_record(
     reason: str | None,
     sequence: int | None,
     latency_ms: int | None,
+    bundle_hash: str | None = None,
 ) -> dict:
     """One stream record for one recorded policy decision."""
     return {
@@ -44,6 +45,7 @@ def decision_record(
         "CorrelationId": correlation_id,
         "AgentId": agent_id,
         "PolicyId": policy_id,
+        "BundleHash": bundle_hash or "",
         "ToolName": tool_name or "",
         "Decision": decision,
         "EnforcementMode": enforcement_mode,

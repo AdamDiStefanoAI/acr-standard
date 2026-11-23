@@ -121,6 +121,7 @@ class PolicyDecisionRecord(Base):
             "enforcement_mode",
             "created_at",
         ),
+        Index("ix_policy_decisions_bundle_hash", "bundle_hash"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
@@ -129,6 +130,15 @@ class PolicyDecisionRecord(Base):
         String(128), ForeignKey("agents.agent_id", ondelete="CASCADE"), nullable=False, index=True
     )
     policy_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    # SHA-256 of the active runtime policy bundle that produced this
+    # evaluation (migration 0021), derived exactly as WS2 policy
+    # simulation and the activation gate derive it: sha256 over the
+    # archive bytes built by build_active_runtime_bundle. Stamped at
+    # recording time in the §18 path, for enforce and observe rows
+    # alike. Null on rows written before this column existed, and on
+    # rows where the bundle could not be rebuilt at recording time
+    # (stamping is best-effort evidence, never a recording failure).
+    bundle_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     decision: Mapped[str] = mapped_column(
         String(16), nullable=False
     )  # allow | deny | modify | escalate
