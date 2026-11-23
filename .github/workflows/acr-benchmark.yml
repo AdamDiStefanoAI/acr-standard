@@ -1,0 +1,101 @@
+# ACR benchmark on GitHub Actions (v1.5.0 WS6, the numbers pack).
+#
+# Manual dispatch only — there is no push/PR trigger on purpose: a
+# benchmark run is a human decision, and its numbers are only
+# meaningful for the revision that produced them. The run boots the
+# same disposable full stack as the red-team and full-stack validation
+# workflows, runs scripts/benchmark_harness.py against it, and uploads
+# the versioned results files (JSON + markdown) as artifacts.
+#
+# The harness verifies every response's decision against the
+# workload's expected decision; a run whose decisions do not match
+# exits non-zero and its numbers must be discarded, never published.
+# Publishing a run's numbers into docs/benchmarks.md (with its
+# environment block) is a separate, human, documentation change.
+#
+# The env values below are the public synthetic CI credentials copied
+# verbatim from acr-red-team.yml, valid only for this disposable stack.
+
+name: ACR benchmark (disposable, manual only)
+on:
+  workflow_dispatch:
+    inputs:
+      concurrency:
+        description: 'Comma-separated concurrency levels'
+        required: true
+        default: '1,4,8'
+        type: string
+      requests:
+        description: 'Measured requests per workload per stage'
+        required: true
+        default: '200'
+        type: string
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: implementations/acr-control-plane
+    env:
+      COMPOSE_PROJECT_NAME: acr-benchmark-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_FILE: docker-compose.yml:docker-compose.full-stack-test.yml
+      OPERATOR_API_KEYS_JSON: '{"ci-operator-only":{"subject":"ci-operator","roles":["agent_admin","approver","security_admin","auditor","killswitch_operator"]}}'
+      SERVICE_OPERATOR_API_KEY: ci-operator-only
+      EXECUTOR_HMAC_SECRET: ci-executor-hmac-only-not-a-production-secret-0123456789
+      EXECUTOR_CREDENTIAL_SECRET: ci-executor-credential-only-not-a-production-secret-0123
+      JWT_SECRET_KEY: ci-jwt-only-not-a-production-secret-123456789012345
+      KILLSWITCH_SECRET: ci-killswitch-only-not-a-production-secret-0123456789
+      ACR_ENV: development
+      OPERATOR_API_KEY: ci-operator-only
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record revision and runtime
+        run: |
+          mkdir -p benchmark-results
+          git rev-parse HEAD > benchmark-results/revision.txt
+          git log -1 --format='%H %ci %s' >> benchmark-results/revision.txt
+          docker version > benchmark-results/docker-version.txt
+          docker compose version >> benchmark-results/docker-version.txt
+          docker compose config --quiet
+      - name: Fail fast if the harness is absent
+        run: |
+          test -f scripts/benchmark_harness.py || {
+            echo '::error::scripts/benchmark_harness.py is missing; the run must never report numbers it did not measure.'
+            exit 1
+          }
+      - name: Pull disposable images
+        timeout-minutes: 5
+        run: docker compose pull postgres redis opa
+      - name: Build and start the disposable stack
+        timeout-minutes: 12
+        run: docker compose up --build -d --wait --wait-timeout 300
+      - name: Run the benchmark harness
+        timeout-minutes: 25
+        run: |
+          python3 scripts/benchmark_harness.py \
+            --concurrency "${{ inputs.concurrency }}" \
+            --requests "${{ inputs.requests }}" \
+            --output benchmark-results/results.json \
+            --markdown benchmark-results/results.md
+      - name: Capture stack logs
+        if: always()
+        run: |
+          docker compose ps -a > benchmark-results/compose-status.txt
+          docker compose logs --no-color --tail 300 > benchmark-results/compose.log
+      - name: Tear down only this run's disposable stack
+        if: always()
+        timeout-minutes: 3
+        run: docker compose down -v --remove-orphans
+      - name: Retain benchmark results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: acr-benchmark-${{ github.run_id }}-${{ github.run_attempt }}
+          path: implementations/acr-control-plane/benchmark-results/
+          retention-days: 30
