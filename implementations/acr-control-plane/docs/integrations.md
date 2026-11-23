@@ -2,7 +2,8 @@
 
 ACR's two human/machine touchpoints — approval requests and decision
 events — can be delivered into the tools an enterprise already runs:
-Slack, Microsoft Teams, ServiceNow, and Microsoft Sentinel.
+Slack, Microsoft Teams, ServiceNow, Microsoft Sentinel, Splunk, and
+any syslog receiver.
 
 **Architecture rules that hold for every integration:**
 
@@ -43,6 +44,8 @@ Slack, Microsoft Teams, ServiceNow, and Microsoft Sentinel.
 | Microsoft Teams | **UNVERIFIED.** Built to Microsoft's published incoming-webhook / Adaptive Card / outgoing-webhook formats; contract tests against mocks only. Live verification requires a tenant. |
 | ServiceNow | **UNVERIFIED.** Table API client contract-tested against mocks only. |
 | Microsoft Sentinel | **UNVERIFIED.** Logs Ingestion API shape contract-tested against mocks only. |
+| Splunk (HEC) | **UNVERIFIED.** Built to Splunk's published HTTP Event Collector format; contract tests against mocks only. Live verification requires an instance. |
+| Syslog | **UNVERIFIED.** RFC 5424 message shape contract-tested against mocked sockets only. Live verification requires a receiver. |
 
 ## Shared outbox settings
 
@@ -190,4 +193,65 @@ SENTINEL_STREAM_NAME=Custom-ACRDecisions_CL
 SENTINEL_TENANT_ID=...
 SENTINEL_CLIENT_ID=...
 SENTINEL_CLIENT_SECRET=...
+```
+
+## Splunk — UNVERIFIED
+
+- The full outbox event stream — approval requested/decided,
+  containment, kill switch, and recorded policy decisions — is posted
+  to the Splunk **HTTP Event Collector** as newline-delimited JSON
+  event envelopes in a single batched request (up to
+  `SPLUNK_HEC_BATCH_MAX`, default 100, per POST), authorized with
+  `Authorization: Splunk <token>`. Each envelope carries the configured
+  index/source/sourcetype and an event document with the event type,
+  reference, correlation id, and the same payload the other emitters
+  consume for that event. Decision records carry the canonical
+  decision-record shape the Sentinel export uses.
+- HEC answers HTTP 200 with a JSON body; a nonzero `code` is an error
+  even at HTTP 200. Token-state codes (disabled, inactive, invalid)
+  are fatal and dead-letter on the first attempt; HTTP 5xx/429 and
+  other codes retry with the shared outbox backoff.
+- Decision export rows are enqueued **after** the §18 recording
+  commit, in their own guarded transaction, exactly like the Sentinel
+  export. Export lag or failure never touches the evidence trail.
+- `SPLUNK_HEC_URL` is the full collector endpoint
+  (`https://<host>:8088/services/collector/event`); a URL ending in
+  `/services/collector` has `/event` appended. The token comes only
+  from the deployment environment; it is never logged.
+
+```bash
+SPLUNK_HEC_ENABLED=true
+SPLUNK_HEC_URL=https://splunk.example.com:8088/services/collector/event
+SPLUNK_HEC_TOKEN=...
+SPLUNK_HEC_INDEX=acr_events
+SPLUNK_HEC_SOURCE=acr-control-plane
+SPLUNK_HEC_SOURCETYPE=acr:events
+```
+
+## Syslog — UNVERIFIED
+
+- The same full event stream is emitted as **RFC 5424** syslog
+  messages, one message per event, over UDP or TCP
+  (`SYSLOG_PROTOCOL`). TCP uses RFC 6587 octet-counted framing.
+  Transports are plain UDP/TCP only — **TLS is not offered in this
+  release**; put the receiver on a trusted network segment or tunnel
+  accordingly.
+- The event document (event type, reference, correlation id, payload)
+  is carried as JSON in the message body; the event type is also the
+  MSGID. Severity is mapped from the event: kill switch activation is
+  `crit`, containment is `err`, denied outcomes are `warning`,
+  escalations are `notice`, everything else is `info`. The facility
+  is `SYSLOG_FACILITY` (default 16, local0) and the app name is
+  `SYSLOG_APP_NAME` (default `acr`).
+- Socket failures retry with the shared outbox backoff and
+  dead-letter after the configured maximum attempts; a down receiver
+  cannot affect the producing path.
+
+```bash
+SYSLOG_ENABLED=true
+SYSLOG_HOST=logs.example.com
+SYSLOG_PORT=514
+SYSLOG_PROTOCOL=udp
+SYSLOG_FACILITY=16
+SYSLOG_APP_NAME=acr
 ```

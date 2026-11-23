@@ -639,6 +639,25 @@ async def evaluate(
                     error=str(exc),
                 )
 
+        # ── [6c] Splunk/syslog export enqueue ───────────────────────────────
+        # Same contract as [6b]: strictly after the recording commit, in
+        # its own guarded transaction; failures are logged and swallowed.
+        if settings.splunk_hec_enabled or settings.syslog_enabled:
+            try:
+                from acr.integrations.events import enqueue_siem_decisions
+
+                await enqueue_siem_decisions(
+                    db, correlation_id=correlation_id, sequence=decision_sequence
+                )
+                await db.commit()
+            except Exception as exc:  # export must never touch enforcement
+                await db.rollback()
+                logger.warning(
+                    "siem_export_enqueue_failed",
+                    correlation_id=correlation_id,
+                    error=str(exc),
+                )
+
         # ── [7] Escalate → approval queue ─────────────────────────────────────
         # Enforce mode only: in observe mode a would-be escalation is
         # recorded (step [6]) and the call proceeds via step [9] — no

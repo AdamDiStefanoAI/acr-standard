@@ -141,9 +141,14 @@ async def _apply_success(
 async def _deliver_one(
     db: AsyncSession, row: IntegrationOutboxRecord, client: httpx.AsyncClient
 ) -> None:
-    from acr.integrations import servicenow, slack, teams
+    from acr.integrations import servicenow, slack, syslog, teams
 
-    senders = {"slack": slack.deliver, "teams": teams.deliver, "servicenow": servicenow.deliver}
+    senders = {
+        "slack": slack.deliver,
+        "teams": teams.deliver,
+        "servicenow": servicenow.deliver,
+        "syslog": syslog.deliver,
+    }
     sender = senders.get(row.integration)
     if sender is None:
         raise DeliveryError(f"No sender for integration '{row.integration}'", retryable=False)
@@ -151,28 +156,46 @@ async def _deliver_one(
     await _apply_success(db, row, delivery_ref)
 
 
-async def _deliver_sentinel_batch(
-    db: AsyncSession, rows: list[IntegrationOutboxRecord], client: httpx.AsyncClient
+async def _deliver_batch(
+    db: AsyncSession,
+    rows: list[IntegrationOutboxRecord],
+    client: httpx.AsyncClient,
+    deliver_batch,
 ) -> None:
-    """Sentinel rows batch: one Logs Ingestion request carries many records.
+    """Batched rows: one request carries many records (Sentinel Logs
+    Ingestion, Splunk HEC).
 
     Each row still gets its own attempt record and its own retry state —
     batching changes the HTTP shape, never the evidence shape.
     """
-    from acr.integrations import sentinel
-
     for row in rows:
         row.status = "delivering"
         row.attempts += 1
     await db.commit()
     try:
-        await sentinel.deliver_batch(rows, client)
+        await deliver_batch(rows, client)
     except Exception as exc:
         for row in rows:
             await _apply_failure(db, row, exc)
         return
     for row in rows:
         await _apply_success(db, row, None)
+
+
+async def _deliver_sentinel_batch(
+    db: AsyncSession, rows: list[IntegrationOutboxRecord], client: httpx.AsyncClient
+) -> None:
+    from acr.integrations import sentinel
+
+    await _deliver_batch(db, rows, client, sentinel.deliver_batch)
+
+
+async def _deliver_splunk_batch(
+    db: AsyncSession, rows: list[IntegrationOutboxRecord], client: httpx.AsyncClient
+) -> None:
+    from acr.integrations import splunk
+
+    await _deliver_batch(db, rows, client, splunk.deliver_batch)
 
 
 async def process_outbox_once(
@@ -200,12 +223,7 @@ async def process_outbox_once(
         )
         due = list(result.scalars().all())
 
-        sentinel_rows = [r for r in due if r.integration == "sentinel"]
-        other_rows = [r for r in due if r.integration != "sentinel"]
-        batch_size = max(1, settings.sentinel_batch_max)
-        for start in range(0, len(sentinel_rows), batch_size):
-            batch = sentinel_rows[start : start + batch_size]
-            await _deliver_sentinel_batch(db, batch, client)
+        def _tally(batch: list[IntegrationOutboxRecord]) -> None:
             for row in batch:
                 if row.status == "delivered":
                     counts["delivered"] += 1
@@ -213,6 +231,20 @@ async def process_outbox_once(
                     counts["dead_letter"] += 1
                 else:
                     counts["failed"] += 1
+
+        sentinel_rows = [r for r in due if r.integration == "sentinel"]
+        splunk_rows = [r for r in due if r.integration == "splunk"]
+        other_rows = [r for r in due if r.integration not in ("sentinel", "splunk")]
+        batch_size = max(1, settings.sentinel_batch_max)
+        for start in range(0, len(sentinel_rows), batch_size):
+            batch = sentinel_rows[start : start + batch_size]
+            await _deliver_sentinel_batch(db, batch, client)
+            _tally(batch)
+        splunk_batch_size = max(1, settings.splunk_hec_batch_max)
+        for start in range(0, len(splunk_rows), splunk_batch_size):
+            batch = splunk_rows[start : start + splunk_batch_size]
+            await _deliver_splunk_batch(db, batch, client)
+            _tally(batch)
 
         for row in other_rows:
             row.status = "delivering"
