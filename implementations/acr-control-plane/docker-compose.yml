@@ -231,7 +231,7 @@ services:
     ports:
       - "8080:8080"
     environment:
-      MCP_GATEWAY_UPSTREAM_URL: ${MCP_GATEWAY_UPSTREAM_URL:?Set the upstream MCP server URL}
+      MCP_GATEWAY_UPSTREAM_URL: ${MCP_GATEWAY_UPSTREAM_URL:-}
       MCP_GATEWAY_UPSTREAM_ID: ${MCP_GATEWAY_UPSTREAM_ID:-}
       MCP_GATEWAY_AGENT_ID: ${MCP_GATEWAY_AGENT_ID:-acr-mcp-gateway}
       ACR_GATEWAY_URL: http://acr-gateway:8000
