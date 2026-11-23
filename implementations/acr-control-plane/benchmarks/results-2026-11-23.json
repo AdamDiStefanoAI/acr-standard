@@ -1,0 +1,385 @@
+{
+  "run_id": "20261123T204733Z",
+  "gateway_url": "http://127.0.0.1:8000",
+  "harness": "scripts/benchmark_harness.py",
+  "load_model": "closed-loop, fixed worker threads, no think time, keep-alive connection per worker",
+  "requests_per_stage": 200,
+  "warmup_per_stage": 25,
+  "workloads": {
+    "allow": {
+      "expected_decision": "allow",
+      "expected_status": 200,
+      "tool_name": "query_customer_db",
+      "stages": [
+        {
+          "concurrency": 1,
+          "requests_measured": 200,
+          "errors": 0,
+          "wall_seconds": 6.243,
+          "throughput_rps": 32.04,
+          "latency_ms": {
+            "mean": 31.13,
+            "p50": 27.11,
+            "p95": 54.53,
+            "p99": 88.48,
+            "max": 102.82
+          },
+          "decisions": {
+            "allow": 200
+          },
+          "would_be_decisions": {},
+          "statuses": {
+            "200": 200
+          }
+        },
+        {
+          "concurrency": 4,
+          "requests_measured": 200,
+          "errors": 0,
+          "wall_seconds": 5.844,
+          "throughput_rps": 34.22,
+          "latency_ms": {
+            "mean": 115.68,
+            "p50": 106.33,
+            "p95": 187.99,
+            "p99": 278.01,
+            "max": 387.49
+          },
+          "decisions": {
+            "allow": 200
+          },
+          "would_be_decisions": {},
+          "statuses": {
+            "200": 200
+          }
+        },
+        {
+          "concurrency": 8,
+          "requests_measured": 200,
+          "errors": 0,
+          "wall_seconds": 5.91,
+          "throughput_rps": 33.84,
+          "latency_ms": {
+            "mean": 229.78,
+            "p50": 217.43,
+            "p95": 309.09,
+            "p99": 369.13,
+            "max": 478.98
+          },
+          "decisions": {
+            "allow": 200
+          },
+          "would_be_decisions": {},
+          "statuses": {
+            "200": 200
+          }
+        }
+      ]
+    },
+    "deny": {
+      "expected_decision": "deny",
+      "expected_status": 403,
+      "tool_name": "send_email",
+      "stages": [
+        {
+          "concurrency": 1,
+          "requests_measured": 200,
+          "errors": 0,
+          "wall_seconds": 7.062,
+          "throughput_rps": 28.32,
+          "latency_ms": {
+            "mean": 35.22,
+            "p50": 32.28,
+            "p95": 54.5,
+            "p99": 68.55,
+            "max": 117.25
+          },
+          "decisions": {
+            "deny": 200
+          },
+          "would_be_decisions": {},
+          "statuses": {
+            "403": 200
+          }
+        },
+        {
+          "concurrency": 4,
+          "requests_measured": 200,
+          "errors": 0,
+          "wall_seconds": 6.722,
+          "throughput_rps": 29.75,
+          "latency_ms": {
+            "mean": 118.01,
+            "p50": 103.32,
+            "p95": 207.84,
+            "p99": 247.65,
+            "max": 267.96
+          },
+          "decisions": {
+            "deny": 200
+          },
+          "would_be_decisions": {},
+          "statuses": {
+            "403": 200
+          }
+        },
+        {
+          "concurrency": 8,
+          "requests_measured": 200,
+          "errors": 0,
+          "wall_seconds": 7.271,
+          "throughput_rps": 27.51,
+          "latency_ms": {
+            "mean": 284.4,
+            "p50": 284.69,
+            "p95": 411.98,
+            "p99": 464.5,
+            "max": 473.25
+          },
+          "decisions": {
+            "deny": 200
+          },
+          "would_be_decisions": {},
+          "statuses": {
+            "403": 200
+          }
+        }
+      ]
+    },
+    "escalate": {
+      "expected_decision": "escalate",
+      "expected_status": 202,
+      "tool_name": "issue_refund",
+      "stages": [
+        {
+          "concurrency": 1,
+          "requests_measured": 200,
+          "errors": 0,
+          "wall_seconds": 8.09,
+          "throughput_rps": 24.72,
+          "latency_ms": {
+            "mean": 40.37,
+            "p50": 37.84,
+            "p95": 52.75,
+            "p99": 73.78,
+            "max": 149.45
+          },
+          "decisions": {
+            "escalate": 200
+          },
+          "would_be_decisions": {},
+          "statuses": {
+            "202": 200
+          }
+        },
+        {
+          "concurrency": 4,
+          "requests_measured": 200,
+          "errors": 0,
+          "wall_seconds": 6.816,
+          "throughput_rps": 29.34,
+          "latency_ms": {
+            "mean": 135.3,
+            "p50": 123.23,
+            "p95": 194.52,
+            "p99": 215.53,
+            "max": 249.41
+          },
+          "decisions": {
+            "escalate": 200
+          },
+          "would_be_decisions": {},
+          "statuses": {
+            "202": 200
+          }
+        },
+        {
+          "concurrency": 8,
+          "requests_measured": 200,
+          "errors": 0,
+          "wall_seconds": 6.793,
+          "throughput_rps": 29.44,
+          "latency_ms": {
+            "mean": 267.33,
+            "p50": 270.51,
+            "p95": 366.87,
+            "p99": 414.78,
+            "max": 432.84
+          },
+          "decisions": {
+            "escalate": 200
+          },
+          "would_be_decisions": {},
+          "statuses": {
+            "202": 200
+          }
+        }
+      ]
+    },
+    "observe_allow": {
+      "expected_decision": "allow",
+      "expected_status": 200,
+      "tool_name": "query_customer_db",
+      "stages": [
+        {
+          "concurrency": 1,
+          "requests_measured": 200,
+          "errors": 0,
+          "wall_seconds": 6.209,
+          "throughput_rps": 32.21,
+          "latency_ms": {
+            "mean": 30.96,
+            "p50": 27.65,
+            "p95": 46.26,
+            "p99": 68.93,
+            "max": 84.1
+          },
+          "decisions": {
+            "allow": 200
+          },
+          "would_be_decisions": {
+            "allow": 200
+          },
+          "statuses": {
+            "200": 200
+          }
+        },
+        {
+          "concurrency": 4,
+          "requests_measured": 200,
+          "errors": 0,
+          "wall_seconds": 5.109,
+          "throughput_rps": 39.15,
+          "latency_ms": {
+            "mean": 100.09,
+            "p50": 97.52,
+            "p95": 164.02,
+            "p99": 180.46,
+            "max": 188.59
+          },
+          "decisions": {
+            "allow": 200
+          },
+          "would_be_decisions": {
+            "allow": 200
+          },
+          "statuses": {
+            "200": 200
+          }
+        },
+        {
+          "concurrency": 8,
+          "requests_measured": 200,
+          "errors": 0,
+          "wall_seconds": 6.005,
+          "throughput_rps": 33.31,
+          "latency_ms": {
+            "mean": 232.46,
+            "p50": 217.19,
+            "p95": 356.56,
+            "p99": 408.72,
+            "max": 513.34
+          },
+          "decisions": {
+            "allow": 200
+          },
+          "would_be_decisions": {
+            "allow": 200
+          },
+          "statuses": {
+            "200": 200
+          }
+        }
+      ]
+    },
+    "observe_deny": {
+      "expected_decision": "allow",
+      "expected_status": 200,
+      "tool_name": "send_email",
+      "stages": [
+        {
+          "concurrency": 1,
+          "requests_measured": 200,
+          "errors": 0,
+          "wall_seconds": 6.611,
+          "throughput_rps": 30.25,
+          "latency_ms": {
+            "mean": 32.87,
+            "p50": 30.17,
+            "p95": 48.91,
+            "p99": 66.47,
+            "max": 89.74
+          },
+          "decisions": {
+            "allow": 200
+          },
+          "would_be_decisions": {
+            "deny": 200
+          },
+          "statuses": {
+            "200": 200
+          }
+        },
+        {
+          "concurrency": 4,
+          "requests_measured": 200,
+          "errors": 0,
+          "wall_seconds": 6.167,
+          "throughput_rps": 32.43,
+          "latency_ms": {
+            "mean": 108.51,
+            "p50": 92.96,
+            "p95": 190.89,
+            "p99": 306.69,
+            "max": 319.14
+          },
+          "decisions": {
+            "allow": 200
+          },
+          "would_be_decisions": {
+            "deny": 200
+          },
+          "statuses": {
+            "200": 200
+          }
+        },
+        {
+          "concurrency": 8,
+          "requests_measured": 200,
+          "errors": 0,
+          "wall_seconds": 6.717,
+          "throughput_rps": 29.78,
+          "latency_ms": {
+            "mean": 262.59,
+            "p50": 232.03,
+            "p95": 442.33,
+            "p99": 552.24,
+            "max": 596.62
+          },
+          "decisions": {
+            "allow": 200
+          },
+          "would_be_decisions": {
+            "deny": 200
+          },
+          "statuses": {
+            "200": 200
+          }
+        }
+      ]
+    }
+  },
+  "decision_verification": "passed",
+  "environment": {
+    "description": "Single sandbox VM, all components co-located on one host, loopback networking only. NOT production hardware and NOT the multi-host reference topology: the load generator competes for the same CPU as the stack under test.",
+    "host": "AMD EPYC 9D25 VM, ~1.5 shared vCPU (throttled sandbox), 6 GiB RAM",
+    "os_python": "Linux x86_64, Python 3.12.3",
+    "gateway": "acr-control-plane at e976075 (origin/main) + WS6 harness, uvicorn 2 workers (compose default WEB_CONCURRENCY=2)",
+    "opa": "OPA 0.70.0 server, managed bundle polled from the gateway",
+    "postgres": "PostgreSQL 16.2, schema at Alembic head 0022",
+    "redis": "Redis 6.2.14",
+    "policies": "managed core (common, content_safety) + shipped operator extension operator-policies/customer_support.rego",
+    "execute_allowed_actions": false
+  },
+  "comparison_run": "A prior run the same day (concurrency 1,8; identical methodology) measured c=1 p50 within ~6% of this run on every workload (allow 27.6 vs 27.1 ms, deny 30.4 vs 32.3 ms, escalate 35.7 vs 37.8 ms). A third attempt was invalidated when the host ran out of disk mid-run: Postgres stopped, evaluations failed secure (deny / 503), and the harness decision verification rejected the run. Invalid runs are discarded, never averaged in."
+}
