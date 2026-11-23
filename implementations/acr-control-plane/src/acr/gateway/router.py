@@ -557,7 +557,6 @@ async def evaluate(
                 retained_input_data=retained_input_data,
             )
         except Exception as exc:
-
             await db.rollback()
             logger.error(
                 "Policy decision recording failed",
