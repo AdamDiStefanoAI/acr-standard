@@ -17,6 +17,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 import structlog
@@ -32,6 +34,7 @@ logger = structlog.get_logger(__name__)
 SLACK_API_BASE = "https://slack.com/api"
 SIGNATURE_TOLERANCE_SECONDS = 300
 _FATAL_SLACK_ERRORS = {"invalid_auth", "token_revoked", "account_inactive", "missing_scope"}
+_EASTERN = ZoneInfo("America/New_York")
 
 
 # ── Signature verification (inbound) ─────────────────────────────────────────
@@ -120,33 +123,74 @@ def _approval_blocks(payload: dict) -> list[dict]:
     return blocks
 
 
+def _decided_when(value: datetime | None) -> tuple[str, str] | None:
+    """(date, time) in America/New_York: ("Nov 23, 2026", "4:14 PM ET").
+
+    Rendered for humans in the decided card — never the raw ISO string.
+    Naive values (SQLite drops tz info) are read as UTC, the DB contract.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    local = value.astimezone(_EASTERN)
+    date_part = f"{local.strftime('%b')} {local.day}, {local.year}"
+    hour = local.hour % 12 or 12
+    time_part = f"{hour}:{local.minute:02d} {local.strftime('%p')} ET"
+    return date_part, time_part
+
+
+def _decider_label(record: ApprovalRequestRecord) -> str:
+    """Who decided, as the card should name them.
+
+    A decision that arrived through Slack names the Slack user who
+    clicked (a mention, so it renders as their profile); decisions from
+    any other surface fall back to the operator subject.
+    """
+    if record.decided_channel == "slack" and record.chat_actor_id:
+        return f"<@{record.chat_actor_id}>"
+    return record.decided_by or "an operator"
+
+
 def _decided_blocks(record: ApprovalRequestRecord) -> list[dict]:
     # Rendered from the record's CURRENT state at delivery time, so a
     # refresh after a conflicting click shows the truth: still pending
     # (possibly past its window), decided, or swept to timed_out.
+    # Button-free by construction: the actions block is gone and the
+    # card states the outcome, who decided, and when — in ET.
     if record.status == "approved":
-        headline = "Approved"
+        headline, verb = "Approved", "approved"
     elif record.status == "overridden":
-        headline = "Approved via break-glass override"
+        headline, verb = "Approved — break-glass override", "approved via break-glass override"
+    elif record.status == "denied":
+        headline, verb = "Denied", "denied"
     elif record.status == "timed_out":
-        headline = "Expired — approval SLA elapsed, auto-denied"
+        headline, verb = "Expired", None
     elif record.status == "pending":
-        headline = "Still pending — no decision recorded"
+        headline, verb = "Still pending", None
     else:
-        headline = "Denied"
-    lines = [f"*{headline}*"]
-    detail = (
+        headline, verb = record.status.capitalize(), None
+    lines: list[str] = []
+    if verb is not None:
+        sentence = f"This action was {verb} by {_decider_label(record)}"
+        when = _decided_when(record.decided_at)
+        if when is not None:
+            sentence += f" on {when[0]} at {when[1]}"
+        lines.append(sentence + ".")
+    elif record.status == "timed_out":
+        lines.append(
+            "No decision was recorded before the approval window elapsed, "
+            "so this action was auto-denied."
+        )
+    else:
+        lines.append("No decision has been recorded yet.")
+    lines.append(
         f"Agent `{record.agent_id}` · Tool `{record.tool_name}` · Request `{record.request_id}`"
     )
-    lines.append(detail)
-    if record.decided_by:
-        via = f" via {record.decided_channel}" if record.decided_channel else ""
-        when = f" at {record.decided_at.isoformat()}" if record.decided_at else ""
-        lines.append(f"Decided by {record.decided_by}{via}{when}")
     if record.decision_reason:
         lines.append(f"Reason: {record.decision_reason}")
     return [
-        {"type": "header", "text": {"type": "plain_text", "text": "Approval decided"}},
+        {"type": "header", "text": {"type": "plain_text", "text": headline}},
         {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}},
     ]
 

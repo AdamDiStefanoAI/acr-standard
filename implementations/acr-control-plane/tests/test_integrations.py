@@ -22,7 +22,7 @@ from urllib.parse import urlencode
 import httpx
 import pytest_asyncio
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from acr.common.time import utcnow
 from acr.config import settings, slack_approver_map, teams_approver_map
@@ -35,7 +35,7 @@ from acr.db.models import (
 from acr.integrations import slack as slack_mod
 from acr.integrations import syslog as syslog_mod
 from acr.integrations import teams as teams_mod
-from acr.integrations.outbox import enqueue_event, process_outbox_once
+from acr.integrations.outbox import _claim_due, enqueue_event, process_outbox_once
 from acr.pillar6_authority.approval import create_approval_request, expire_timed_out_approvals
 
 SLACK_SECRET = "test-signing-secret"
@@ -260,6 +260,19 @@ class TestSlackOutbound:
         assert body["channel"] == "C-APPROVE" and body["ts"] == "1700.001"
         rendered = json.dumps(body["blocks"])
         assert "Approved" in rendered and "test-operator" in rendered
+        # Decided-card wording: buttons gone, plain outcome headline,
+        # and a decided-by sentence with a human ET timestamp.
+        blocks = body["blocks"]
+        assert all(b["type"] != "actions" for b in blocks)
+        header = next(b for b in blocks if b["type"] == "header")
+        assert header["text"]["text"] == "Approved"
+        section = next(b for b in blocks if b["type"] == "section")["text"]["text"]
+        assert "This action was approved by test-operator" in section
+        assert re.search(r"on [A-Z][a-z]{2} \d{1,2}, \d{4} at \d{1,2}:\d{2} [AP]M ET\.", section)
+        assert record.request_id in section
+        await db.refresh(record)
+        assert record.decided_at is not None
+        assert record.decided_at.isoformat() not in section  # no raw ISO
 
 
 # ── Slack: inbound callbacks ─────────────────────────────────────────────────
@@ -414,6 +427,40 @@ class TestSlackCallbacks:
         assert "Expired" in json.dumps(updates[0][1]["blocks"])
         await db.refresh(record)
         assert record.status == "timed_out"
+
+    async def test_chat_decision_update_names_the_slack_clicker(
+        self, db: AsyncSession, sample_agent, async_client
+    ) -> None:
+        """A decision made by clicking in Slack re-renders the original
+        card button-free, naming the clicker as a Slack mention."""
+        enable_slack()
+        record = await make_approval(db, sample_agent.agent_id)
+        calls: list = []
+        async with mock_client(slack_ok_handler(calls)) as client:
+            await process_outbox_once(db, client)  # post the request card
+            raw = slack_callback_body(SLACK_USER, "acr_approve", record.request_id)
+            resp = await async_client.post(
+                "/acr/integrations/slack/actions",
+                content=raw,
+                headers={
+                    "content-type": "application/x-www-form-urlencoded",
+                    **sign_slack(raw),
+                },
+            )
+            assert resp.status_code == 200
+            counts = await process_outbox_once(db, client)  # deliver the update
+        assert counts["delivered"] == 1
+        updates = [c for c in calls if c[0].endswith("chat.update")]
+        assert len(updates) == 1
+        _, body, _ = updates[0]
+        assert body["channel"] == "C-APPROVE" and body["ts"] == "1700.001"
+        blocks = body["blocks"]
+        assert all(b["type"] != "actions" for b in blocks)
+        header = next(b for b in blocks if b["type"] == "header")
+        assert header["text"]["text"] == "Approved"
+        section = next(b for b in blocks if b["type"] == "section")["text"]["text"]
+        assert f"This action was approved by <@{SLACK_USER}>" in section
+        assert re.search(r"on [A-Z][a-z]{2} \d{1,2}, \d{4} at \d{1,2}:\d{2} [AP]M ET\.", section)
 
     async def test_chat_approval_executes_with_claim_once_receipt(
         self, db: AsyncSession, sample_agent, async_client
@@ -578,6 +625,97 @@ class TestOutboxMechanics:
         assert counts["failed"] == 1
         row = (await outbox_rows(db, integration="slack"))[0]
         assert "channel_not_found" in (row.last_error or "")
+
+    async def test_claim_is_atomic_and_exclusive(
+        self, db: AsyncSession, test_engine, sample_agent
+    ) -> None:
+        """A claimed row is invisible to every other drainer.
+
+        Regression for the duplicate-delivery race: the drain used to
+        SELECT pending rows first and claim them one by one afterwards,
+        so two gateway workers could both select the same row and both
+        deliver it (observed live: one approval, two identical Slack
+        messages). The claim is now a single conditional UPDATE.
+        """
+        enable_slack()
+        await make_approval(db, sample_agent.agent_id)
+
+        claimed = await _claim_due(db)
+        assert len(claimed) == 1
+        assert claimed[0].status == "delivering" and claimed[0].attempts == 1
+
+        factory = async_sessionmaker(bind=test_engine, expire_on_commit=False, class_=AsyncSession)
+        async with factory() as other:
+            assert await _claim_due(other) == []
+            calls: list = []
+            async with mock_client(slack_ok_handler(calls)) as client:
+                counts = await process_outbox_once(other, client)
+            assert counts["delivered"] == 0
+            assert calls == []
+
+    async def test_repeated_drains_deliver_exactly_once(
+        self, db: AsyncSession, sample_agent
+    ) -> None:
+        enable_slack()
+        await make_approval(db, sample_agent.agent_id)
+        calls: list = []
+        async with mock_client(slack_ok_handler(calls)) as client:
+            first = await process_outbox_once(db, client)
+            second = await process_outbox_once(db, client)
+        assert first["delivered"] == 1 and second["delivered"] == 0
+        posts = [c for c in calls if c[0].endswith("chat.postMessage")]
+        assert len(posts) == 1
+
+    async def test_decided_update_waits_for_original_delivery(
+        self, db: AsyncSession, sample_agent, async_client
+    ) -> None:
+        """approval_decided drained before the original card exists must
+        retry (not dead-letter, not update a phantom message) and land
+        on the original ts once the request message has posted."""
+        enable_slack()
+        record = await make_approval(db, sample_agent.agent_id)
+        resp = await async_client.post(
+            f"/acr/approvals/{record.request_id}/approve", json={"reason": "ok"}
+        )
+        assert resp.status_code == 200
+
+        requested = (await outbox_rows(db, integration="slack", event_type="approval_requested"))[0]
+        requested.next_attempt_at = utcnow() + timedelta(hours=1)  # hold the card back
+        await db.commit()
+
+        calls: list = []
+        async with mock_client(slack_ok_handler(calls)) as client:
+            counts = await process_outbox_once(db, client)
+            assert counts["failed"] == 1  # decided tried, backed off retryable
+            decided = (await outbox_rows(db, integration="slack", event_type="approval_decided"))[0]
+            assert decided.status == "pending" and decided.attempts == 1
+            assert "not yet delivered" in (decided.last_error or "")
+            assert [c for c in calls if c[0].endswith("chat.update")] == []
+
+            requested.next_attempt_at = utcnow() - timedelta(seconds=1)
+            decided.next_attempt_at = utcnow() - timedelta(seconds=1)
+            await db.commit()
+            counts = await process_outbox_once(db, client)
+            assert counts["delivered"] == 2
+
+        updates = [c for c in calls if c[0].endswith("chat.update")]
+        assert len(updates) == 1
+        assert updates[0][1]["ts"] == "1700.001"  # the original message
+        decided = (await outbox_rows(db, integration="slack", event_type="approval_decided"))[0]
+        await db.refresh(decided)  # attempts moved via the claim's bulk UPDATE
+        assert decided.status == "delivered" and decided.attempts == 2
+        attempts = (
+            (
+                await db.execute(
+                    select(IntegrationDeliveryAttemptRecord)
+                    .where(IntegrationDeliveryAttemptRecord.outbox_id == decided.id)
+                    .order_by(IntegrationDeliveryAttemptRecord.attempt_number)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [a.result for a in attempts] == ["failure", "success"]
 
 
 # ── Teams (UNVERIFIED — mock contract tests only) ────────────────────────────
