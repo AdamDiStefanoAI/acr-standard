@@ -19,6 +19,7 @@ import pytest
 from acr.common.errors import PolicyEngineError
 from acr.pillar2_policy.engine import evaluate_policy
 from acr.policy_studio.core_bundle import (
+    _expand_symlink_chain,
     _same_file,
     _windows_canonical_form,
     assemble_bundle,
@@ -654,3 +655,64 @@ def test_projection_mapping_survives_stat_failure(tmp_path, monkeypatch):
     (root / "custom.rego").symlink_to("..data/custom.rego")
     monkeypatch.setattr(os.path, "samefile", _stat_unavailable)
     assert list(extension_files(root)) == ["bundle/extensions/custom.rego"]
+
+
+def _patch_windows_projection_chain(monkeypatch, *, data_target="..2026"):
+    """Simulate the Windows projection chain with a link table.
+
+    Reproduces the environment the round-2 CI run diagnosed: Path.resolve()
+    expanded the visible file symlink (mount/custom.rego ->
+    mount/..data/custom.rego) but not the intermediate ..data directory
+    symlink, and os.path.samefile could not equate the two spellings. The
+    fakes give the manual chain expander a two-hop chain to walk (visible
+    file -> ..data -> timestamped backing directory); any path outside the
+    table behaves as it does on the real filesystem.
+    """
+    links = {
+        "C:/mount/custom.rego": "..data/custom.rego",
+        "C:/mount/..data": data_target,
+    }
+    real_islink = os.path.islink
+
+    def fake_islink(path):
+        return str(path) in links or real_islink(path)
+
+    def fake_readlink(path):
+        try:
+            return links[str(path)]
+        except KeyError:
+            raise OSError("not a simulated link") from None
+
+    monkeypatch.setattr(os.path, "islink", fake_islink)
+    monkeypatch.setattr(os, "readlink", fake_readlink)
+
+
+def test_expand_symlink_chain_walks_the_windows_projection_chain(monkeypatch):
+    _patch_windows_projection_chain(monkeypatch)
+    assert _expand_symlink_chain(Path("C:/mount/custom.rego")) == Path(
+        "C:/mount/..2026/custom.rego"
+    )
+    # The backing path itself contains no links and is returned unchanged.
+    assert _expand_symlink_chain(Path("C:/mount/..2026/custom.rego")) == Path(
+        "C:/mount/..2026/custom.rego"
+    )
+
+
+def test_same_file_expands_the_windows_projection_chain(monkeypatch):
+    # With the stat leg sabotaged, identity must come from the manually
+    # expanded chain: the visible file's chain terminates exactly at the
+    # backing file.
+    _patch_windows_projection_chain(monkeypatch)
+    monkeypatch.setattr(os.path, "samefile", _stat_unavailable)
+    visible = Path("C:/mount/custom.rego")
+    backing = Path("C:/mount/..2026/custom.rego")
+    assert _same_file(visible, backing)
+    assert _same_file(backing, visible)
+
+
+def test_same_file_rejects_a_chain_terminating_at_a_different_file(monkeypatch):
+    # The visible chain terminates in a different backing directory than
+    # the file under test, so expansion must not equate them.
+    _patch_windows_projection_chain(monkeypatch, data_target="..2027")
+    monkeypatch.setattr(os.path, "samefile", _stat_unavailable)
+    assert not _same_file(Path("C:/mount/custom.rego"), Path("C:/mount/..2026/custom.rego"))

@@ -78,9 +78,60 @@ def _windows_canonical_form(text: str) -> str:
     return ntpath.normcase(ntpath.normpath(text))
 
 
+_MAX_SYMLINK_EXPANSIONS = 40
+
+
+def _expand_symlink_chain(path: Path) -> Path:
+    """Expand every symlink component of a path by walking it manually.
+
+    Path.resolve() cannot be trusted to do this on every platform: on
+    Windows it expanded the visible file symlink of the Kubernetes
+    projection layout (mount\\custom.rego -> mount\\..data\\custom.rego)
+    but left the intermediate ..data directory symlink unexpanded, so one
+    file produced two different resolved strings (..data vs ..2026) and
+    the backing-file identity check failed. Walk the path prefix by
+    prefix instead: whenever a prefix is a symlink, splice in its target
+    (a relative target resolves against the link's parent directory) and
+    rescan from the start of the spliced portion, so a chain of links
+    (visible file -> ..data -> timestamped backing directory -> file)
+    expands fully on every platform. The expansion cap bounds symlink
+    loops; a component whose target cannot be read is left as-is.
+    """
+    parts = list(path.parts)
+    expansions = 0
+    index = 0
+    while index < len(parts):
+        candidate = Path(*parts[: index + 1])
+        if not os.path.islink(candidate):
+            index += 1
+            continue
+        try:
+            target = os.readlink(candidate)
+        except OSError:
+            index += 1
+            continue
+        expansions += 1
+        if expansions > _MAX_SYMLINK_EXPANSIONS:
+            break
+        target_path = Path(target)
+        if not target_path.is_absolute():
+            target_path = Path(*parts[:index]) / target_path
+        parts = list(target_path.parts) + parts[index + 1 :]
+        index = 0
+    return Path(*parts)
+
+
 def _canonical_path(path: Path) -> str:
-    """The fully resolved path as a comparable string, canonicalized per OS."""
-    text = str(path.resolve())
+    """The fully expanded path as a comparable string, canonicalized per OS.
+
+    Symlink components are expanded by _expand_symlink_chain rather than
+    Path.resolve(), whose expansion of intermediate directory symlinks is
+    unreliable on Windows (see _expand_symlink_chain); resolve() is applied
+    to the expanded path only to absolutize it and collapse any dot
+    segments a relative link target introduced, in a chain-free path where
+    lexical and physical normalization agree.
+    """
+    text = str(_expand_symlink_chain(path).resolve())
     if os.name == "nt":
         return _windows_canonical_form(text)
     return text
@@ -95,9 +146,11 @@ def _same_file(first: Path, second: Path) -> bool:
     stat-based check can raise or disagree across the symlink chain, and
     resolved path strings can differ in form for one file. The signals are
     stat identity (device + inode/file index) and equality of the canonical
-    fully resolved paths (see _windows_canonical_form). Two genuinely
-    different files satisfy neither: their stat identities differ and their
-    resolved locations differ.
+    paths, where canonicalization expands every symlink component manually
+    (see _expand_symlink_chain) before the per-OS form normalization (see
+    _windows_canonical_form). Two genuinely different files satisfy
+    neither: their stat identities differ and their expanded locations
+    differ.
     """
     try:
         if os.path.samefile(first, second):
