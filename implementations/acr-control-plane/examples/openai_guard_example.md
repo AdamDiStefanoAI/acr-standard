@@ -4,6 +4,14 @@ This example keeps the contributor's balance lookup / blocked account-deletion
 scenario. All business-tool effects are in-memory lists: it never accesses a
 customer account, sends a model request, or needs an OpenAI API key.
 
+> **Adapter API (v1.5.0 WS5):** for production wiring, prefer
+> `acr.sdk.openai_agents.guard_openai_tool` / `guard_openai_tools`, which
+> build the guarded `FunctionTool` for you at CrewAI-adapter parity (see
+> [docs/sdk.md](../docs/sdk.md#openai-agents-sdk-adapter)). This example
+> remains the lower-level session-based wiring and its regression tests.
+> The adapter is verified against openai-agents 0.25.0; this example's
+> offline checks below still pin 0.24.0.
+
 ## 1. Mock gateway, plain guarded calls
 
 From a Git checkout's **repository root**, with Python 3.11 or 3.12:

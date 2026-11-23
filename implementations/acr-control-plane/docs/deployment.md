@@ -46,6 +46,7 @@ Use `deploy/k8s/base` as the reusable foundation, not as the final production in
 |---|---|---|---|
 | `acr-gateway` | 0.5 | 512 MB | Scale horizontally for higher throughput |
 | `acr-killswitch` | 0.25 | 256 MB | Single instance is sufficient; stateless except Redis |
+| `acr-mcp-gateway` | 0.25 | 256 MB | Optional (v1.5.0 WS5); one instance per upstream MCP server; see [mcp-gateway.md](mcp-gateway.md) |
 | `opa` | 0.5 | 512 MB | Bundle server mode recommended for large policy sets |
 | PostgreSQL | 1 | 2 GB | Managed instance recommended |
 | Redis | 0.5 | 512 MB | Used for kill switch state and rate limit counters |
@@ -61,6 +62,7 @@ See [configuration.md](configuration.md).
 - Gateway readiness: `GET http://acr-gateway:8000/acr/ready`
 - Kill switch: `GET http://acr-killswitch:8443/health`
 - Kill switch readiness: `GET http://acr-killswitch:8443/ready`
+- MCP gateway: `GET http://acr-mcp-gateway:8080/health`
 - OPA: `GET http://opa:8181/health`
 
 ### Alembic migrations

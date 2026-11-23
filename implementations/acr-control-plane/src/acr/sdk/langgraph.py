@@ -105,6 +105,14 @@ def guard_tool(
             context=context,
             intent=intent,
         )
+        if inspect.isawaitable(response):
+            # A coroutine here means an async session was handed to the
+            # sync guard. Fail loudly instead of treating the coroutine
+            # as a decision object further down.
+            raise ACRSDKError(
+                "guard_tool received an async session; use guard_async_tool "
+                "or build_langchain_tool so evaluations are awaited"
+            )
         _handle_blocking_decision(response)
         effective_parameters = _resolve_effective_parameters(
             parameters, response, resolved_tool_name
@@ -135,13 +143,20 @@ def guard_async_tool(
         parameters = _bind_arguments(func, *args, **kwargs)
         context = context_builder(parameters) if context_builder else {}
         intent = _coerce_intent(intent_builder(parameters)) if intent_builder else None
-        response = await session.evaluate_action(
+        pending = session.evaluate_action(
             tool_name=resolved_tool_name,
             parameters=parameters,
             description=resolved_description,
             context=context,
             intent=intent,
         )
+        # Sessions are duck-typed across the SDK adapters: await the
+        # evaluation when it returns an awaitable, accept a plain response
+        # otherwise. Without this, a session whose evaluate_action is a
+        # coroutine function but which is not an AsyncACRAgentSession
+        # instance surfaces as a confusing "'coroutine' object has no
+        # attribute 'decision'" deep in decision handling.
+        response = await pending if inspect.isawaitable(pending) else pending
         _handle_blocking_decision(response)
         effective_parameters = _resolve_effective_parameters(
             parameters, response, resolved_tool_name
@@ -183,7 +198,17 @@ def build_langchain_tool(
         description or inspect.getdoc(func) or f"Guarded ACR tool: {resolved_name}"
     )
 
-    if isinstance(session, AsyncACRAgentSession):
+    # Async dispatch when the session is async OR the tool function is a
+    # coroutine function. Dispatching on the concrete session type alone
+    # sent coroutine tools — and duck-typed async sessions, whose
+    # evaluate_action is a coroutine function without being an
+    # AsyncACRAgentSession instance — down the sync path, where the
+    # un-awaited coroutine was mistaken for the tool result.
+    if (
+        isinstance(session, AsyncACRAgentSession)
+        or inspect.iscoroutinefunction(func)
+        or inspect.iscoroutinefunction(getattr(session, "evaluate_action", None))
+    ):
         coroutine = guard_async_tool(
             func,
             session=session,

@@ -60,13 +60,20 @@ HTTP decisions and fake in-memory refunds, not a payment service or live policy 
 
 The Python SDK also includes a real adapter layer for LangGraph/LangChain-style tools.
 
-**Optional dependency limitation (2026-10-25):** the `integrations` extra and the
-legacy LangGraph example dependency family are not audit-clean. Do not install
-those optional dependencies for production evaluation pending a separately reviewed
-migration. The SDK/base-package security fix does not remediate them; the base
-`pip install acr-control-plane` path does not install them. See the
-[example installation warning](../examples/langgraph_guard_example.md#install).
-The plain `guard_tool` and `guard_async_tool` wrappers do not require LangChain.
+**Verification status (2026-11-23, v1.5.0 WS5):** the adapter is verified
+against langchain-core 1.8.4 and langgraph 1.2.24, including streaming
+(sync and async), native async tool dispatch, and LangGraph retry paths;
+`pip-audit` reports no known vulnerabilities for the current dependency
+family. (The 2026-10-25 not-audit-clean limitation referred to the legacy
+pre-1.0 example dependency family and no longer applies; the `integrations`
+extra now pins the verified 1.x line.) The base `pip install
+acr-control-plane` path does not install them. The plain `guard_tool` and
+`guard_async_tool` wrappers do not require LangChain.
+
+One retry subtlety matters: LangGraph's default `RetryPolicy` does not
+retry `RuntimeError` subclasses, so an ACR denial is final unless a graph
+opts into retrying it explicitly — and even then every retry is a fresh
+ACR evaluation, never a replay of the denied call.
 
 Use:
 
@@ -133,6 +140,48 @@ only when rebuilding the guarded tool, and otherwise returns the guarded
 plain function. Class-based `BaseTool` subclasses are not rewrappable
 without losing their schema — guard the function the tool calls instead.
 See the [CrewAI guard example](../examples/crewai_guard_example.py).
+
+## OpenAI Agents SDK Adapter
+
+`acr.sdk.openai_agents` guards tools for the OpenAI Agents SDK at the same
+parity as the CrewAI adapter:
+
+- `guard_openai_tool(fn, session=...)` — guard one plain Python function (or
+  a CrewAI-style tool object exposing one); returns an Agents SDK
+  `FunctionTool` with the same name and description.
+- `guard_openai_tools([...], session=...)` — guard a whole tool list at once.
+
+```python
+from acr.sdk import ACRClient
+from acr.sdk.openai_agents import guard_openai_tool
+
+session = ACRClient(base_url="https://acr.example.com", operator_api_key="<redacted>").issue_agent_session("ops-agent")
+
+def restart_service(service_name: str) -> str:
+    """Restart a named service."""
+    return f"restarted {service_name}"
+
+restart_tool = guard_openai_tool(restart_service, session=session)
+# hand restart_tool to your Agent(tools=[...]) as usual
+```
+
+The guarded tool is built with `failure_error_function=None`, so a deny or
+escalate decision raises `ACRDeniedError` / `ACREscalatedError` out of the
+tool call instead of being converted into a model-visible error string the
+agent could talk its way around. The exception carries the full evaluate
+response — `correlation_id` (and `approval_request_id` on escalate) is the
+receipt binding for the recorded decision. As with the other adapters, a
+`modify` decision applies the transformed parameters and a gateway-managed
+execution result short-circuits local execution.
+
+The Agents SDK itself is supplied by your agent application; the adapter
+imports it only when building the `FunctionTool`, and otherwise returns the
+guarded plain function. Guard plain functions (or `@function_tool`-style
+callables before wrapping): an already-built `FunctionTool` does not expose
+its underlying function and cannot be re-wrapped. Verified against
+openai-agents 0.25.0 (2026-11-23, v1.5.0 WS5). For a session-based wiring
+without the adapter, see the [OpenAI guard
+example](../examples/openai_guard_example.py).
 
 The Python SDK rejects ALLOW/MODIFY on non-200 evaluation responses. A MODIFY
 response must include an explicit replacement action and parameters for the
