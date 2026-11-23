@@ -165,6 +165,27 @@ class Settings(BaseSettings):
     sentinel_client_id: str = ""
     sentinel_client_secret: str = ""
     sentinel_batch_max: int = 100
+    # Splunk HTTP Event Collector (HEC) event export. UNVERIFIED
+    # (mock contract tests only). The URL is the full collector
+    # endpoint (…/services/collector/event); a URL ending in
+    # /services/collector has /event appended. The token comes only
+    # from the deployment environment and is never logged.
+    splunk_hec_enabled: bool = False
+    splunk_hec_url: str = ""
+    splunk_hec_token: str = ""
+    splunk_hec_index: str = ""
+    splunk_hec_source: str = "acr-control-plane"
+    splunk_hec_sourcetype: str = "acr:events"
+    splunk_hec_batch_max: int = 100
+    # Syslog export (RFC 5424 over UDP or TCP; RFC 6587 octet-counted
+    # framing on TCP). Plain transports only — no TLS in this release.
+    # UNVERIFIED (mock contract tests only).
+    syslog_enabled: bool = False
+    syslog_host: str = ""
+    syslog_port: int = 514
+    syslog_protocol: str = "udp"
+    syslog_facility: int = 16  # local0
+    syslog_app_name: str = "acr"
 
     # ── Auditor grants (v1.5.0 WS3) ───────────────────────────────────────────
     # Auditor access is issued as a time-boxed, read-only grant, never as a
@@ -410,6 +431,8 @@ def any_integration_enabled() -> bool:
             settings.teams_enabled,
             settings.servicenow_enabled,
             settings.sentinel_enabled,
+            settings.splunk_hec_enabled,
+            settings.syslog_enabled,
         )
     )
 

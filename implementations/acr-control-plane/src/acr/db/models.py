@@ -591,7 +591,7 @@ class IntegrationOutboxRecord(Base):
     __tablename__ = "integration_outbox"
     __table_args__ = (
         CheckConstraint(
-            "integration IN ('slack', 'teams', 'servicenow', 'sentinel')",
+            "integration IN ('slack', 'teams', 'servicenow', 'sentinel', 'splunk', 'syslog')",
             name="ck_integration_outbox_integration",
         ),
         CheckConstraint(
