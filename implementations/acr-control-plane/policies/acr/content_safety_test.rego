@@ -61,6 +61,54 @@ test_deny_rm_rf_home_var if {
 	count(deny) > 0 with input as base_input("shell_exec", {"command": "rm -rf $HOME"})
 }
 
+# System roots (2026-11-22 red-team finding): rm -rf against a system
+# directory is destructive even though it is neither / nor $HOME.
+test_deny_rm_rf_etc_passwd if {
+	count(deny) > 0 with input as base_input("shell_exec", {"command": "rm -rf /etc/passwd"})
+	not allow with input as base_input("shell_exec", {"command": "rm -rf /etc/passwd"})
+}
+
+test_deny_rm_rf_etc_exact if {
+	count(deny) > 0 with input as base_input("shell_exec", {"command": "rm -rf /etc"})
+}
+
+test_deny_rm_rf_system_roots if {
+	count(deny) > 0 with input as base_input("shell_exec", {"command": "rm -rf /usr/local"})
+	count(deny) > 0 with input as base_input("shell_exec", {"command": "rm -rf /var"})
+	count(deny) > 0 with input as base_input("shell_exec", {"command": "rm -rf /root/.ssh"})
+	count(deny) > 0 with input as base_input("shell_exec", {"command": "rm -rf /boot"})
+	count(deny) > 0 with input as base_input("shell_exec", {"command": "rm -rf /bin/sh"})
+	count(deny) > 0 with input as base_input("shell_exec", {"command": "rm -rf /proc/1"})
+}
+
+# The exact red-team probe shape: a non-shell tool and an unrelated
+# parameter name. The tool is allowlisted, so the deny is the content rule.
+test_deny_rm_rf_etc_any_tool_any_param if {
+	count(deny) > 0 with input as base_input("run_command", {"customer_id": "rm -rf /etc/passwd"})
+}
+
+# Quoting the target does not evade the system-root check.
+test_deny_rm_rf_etc_quoted if {
+	count(deny) > 0 with input as base_input("shell_exec", {"command": "rm -rf \"/etc/passwd\""})
+}
+
+# A command separator does not hide the second command's target.
+test_deny_rm_rf_etc_after_separator if {
+	count(deny) > 0 with input as base_input("shell_exec", {"command": "echo ok && rm -rf /etc"})
+}
+
+# "cm0gLXJmIC9ldGM=" is base64 for "rm -rf /etc": the decoded payload is
+# re-checked against the same target set.
+test_deny_base64_rm_rf_etc if {
+	count(deny) > 0 with input as base_input("shell_exec", {"command": "cm0gLXJmIC9ldGM="})
+}
+
+# A substitution's parentheses are command separators to the lexer, so the
+# inner command is checked on its own targets.
+test_deny_rm_rf_etc_in_substitution if {
+	count(deny) > 0 with input as base_input("shell_exec", {"command": "$(rm -rf /etc)"})
+}
+
 test_deny_path_traversal if {
 	count(deny) > 0 with input as base_input("read_file", {"path": "../../etc/passwd"})
 	not allow with input as base_input("read_file", {"path": "../../etc/passwd"})
@@ -136,6 +184,13 @@ test_allow_plain_file_path if {
 test_allow_rm_rf_relative_target if {
 	allow with input as base_input("shell_exec", {"command": "rm -rf ./build"})
 	count(deny) == 0 with input as base_input("shell_exec", {"command": "rm -rf ./build"})
+}
+
+# The system-root extension is an enumerated set, not "any absolute path":
+# scratch space under /tmp stays ordinary cleanup.
+test_allow_rm_rf_tmp_target if {
+	allow with input as base_input("shell_exec", {"command": "rm -rf /tmp/myapp"})
+	count(deny) == 0 with input as base_input("shell_exec", {"command": "rm -rf /tmp/myapp"})
 }
 
 # Deliberate conservative boundary: ".." without a path-segment boundary

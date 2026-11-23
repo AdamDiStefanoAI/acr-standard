@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-11-22
+
+### Fixed
+
+- Default content guardrails: the destructive `rm` rule's protected-target set now covers the standard system roots (/bin, /boot, /dev, /etc, /lib, /lib64, /proc, /root, /sbin, /sys, /usr, /var) in addition to /, ~, and $HOME. The 2026-11-22 red-team run (category 1, executed on GitHub Actions against the v1.4.0 stack) showed `rm -rf /etc/passwd` passing the defaults in plain, quoted, and post-separator forms because only /, ~, and $HOME were protected; all forms now deny, including the base64-encoded and command-substitution variants. The set stays enumerated rather than "any absolute path": /tmp and other non-system absolute paths remain operator policy. Rego tests 56 -> 65; the packaged managed-core copy is synced byte-for-byte.
+
 ## [1.4.0] - 2026-11-22
 
 ### Added

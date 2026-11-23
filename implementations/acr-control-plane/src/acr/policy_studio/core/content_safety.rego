@@ -180,6 +180,25 @@ dangerous_rm_target(arg) if {
 	regex.match(`^(/\*?|~(/[\s\S]*)?|\$(HOME|\{HOME\})(/[\s\S]*)?)$`, arg)
 }
 
+# System roots: recursive force-deletion of a system directory, or of
+# anything under one, is host destruction, not cleanup. Added after the
+# 2026-11-22 red-team run showed rm -rf against /etc passing the defaults
+# (plain, quoted, and after a command separator) because only /, ~, and
+# $HOME were protected. The set is deliberately enumerated rather than
+# "any absolute path": /tmp, /home, and other non-system absolute paths
+# remain a matter for operator policy, not the defaults.
+system_roots := {"/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/proc", "/root", "/sbin", "/sys", "/usr", "/var"}
+
+dangerous_rm_target(arg) if {
+	some root in system_roots
+	arg == root
+}
+
+dangerous_rm_target(arg) if {
+	some root in system_roots
+	startswith(arg, sprintf("%s/", [root]))
+}
+
 destructive_shell_command(value) if {
 	args := shell_arguments(value, "rm")[_]
 	rm_recursive(args)
