@@ -1,0 +1,105 @@
+# ACR control plane on native Windows (v1.5.0 Windows parity).
+#
+# The control-plane stack ships as Linux containers and is exercised by
+# the Linux jobs in acr-control-plane-ci.yml; on a Windows host it runs
+# under Docker Desktop (WSL2) and is the same images, not a separate
+# build. What this workflow verifies is the NATIVE Windows surface: the
+# Python package, SDK, CLI, and unit test suite running on Windows
+# itself (SQLite and mocks, no Docker, no integration gate — the same
+# suite CONTRIBUTING.md documents for PowerShell).
+#
+# It mirrors the Linux "test" job in acr-control-plane-ci.yml: same
+# Python versions, same editable install with dev extras, same pinned
+# OPA 0.70.0 (the official Windows binary instead of the container
+# extract), same test secrets, same pytest and coverage invocation.
+# Two deliberate differences: windows-latest runners are slower, so the
+# timeout is 20 minutes instead of 15, and steps use the runner's
+# default PowerShell instead of bash.
+
+name: ACR Control Plane CI (Windows)
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "implementations/acr-control-plane/**"
+      - ".github/workflows/acr-windows.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "implementations/acr-control-plane/**"
+      - ".github/workflows/acr-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# This is a monorepo. Defaults apply to shell steps, not action inputs.
+defaults:
+  run:
+    working-directory: implementations/acr-control-plane
+
+jobs:
+  test:
+    name: Tests on Windows (Python ${{ matrix.python-version }})
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # hatch-vcs reads the root repository's tags.
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: implementations/acr-control-plane/pyproject.toml
+
+      - name: Install dependencies
+        run: python -m pip install -e ".[dev]"
+
+      # Same pinned OPA as the Linux jobs (0.70.0), from the official
+      # release's Windows binary. Tests resolve it through OPA_BINARY,
+      # falling back to shutil.which("opa"), which finds opa.exe.
+      - name: Install pinned OPA policy compiler
+        run: |
+          $opaDir = Join-Path $env:RUNNER_TEMP "opa-bin"
+          New-Item -ItemType Directory -Force -Path $opaDir | Out-Null
+          $opaExe = Join-Path $opaDir "opa.exe"
+          Invoke-WebRequest -Uri "https://github.com/open-policy-agent/opa/releases/download/v0.70.0/opa_windows_amd64.exe" -OutFile $opaExe
+          & $opaExe version
+          "OPA_BINARY=$opaExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run tests with coverage
+        env:
+          # Disposable test values, never production credentials.
+          JWT_SECRET_KEY: "ci_test_secret_not_for_production_at_all"
+          KILLSWITCH_SECRET: "ci_killswitch_secret_not_for_production"
+          ACR_ENV: "test"
+        run: |
+          python -m pytest tests/ -v `
+            --ignore=tests/integration `
+            --cov=src/acr `
+            --cov-report=term-missing `
+            --cov-report=xml `
+            --cov-fail-under=80 `
+            --junitxml=test-results.xml
+
+      - name: Upload test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: acr-test-reports-windows-python-${{ matrix.python-version }}
+          path: |
+            implementations/acr-control-plane/coverage.xml
+            implementations/acr-control-plane/test-results.xml
+          retention-days: 7
