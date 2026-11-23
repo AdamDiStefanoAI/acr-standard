@@ -30,6 +30,42 @@ from acr.integrations.sentinel import decision_record
 logger = structlog.get_logger(__name__)
 
 
+async def _enqueue_siem(
+    db: AsyncSession,
+    *,
+    event_type: str,
+    reference: str,
+    correlation_id: str | None,
+    payload: dict,
+) -> None:
+    """Fan one event out to the SIEM/log sinks (Splunk HEC, syslog).
+
+    Both sinks receive the full event stream — approvals, containment,
+    kill switch, and (via enqueue_siem_decisions) recorded decisions —
+    under the same payload the other emitters consume for that event.
+    """
+    if settings.splunk_hec_enabled:
+        await enqueue_event(
+            db,
+            integration="splunk",
+            event_type=event_type,
+            reference=reference,
+            correlation_id=correlation_id,
+            target=settings.splunk_hec_index or "splunk_hec",
+            payload=payload,
+        )
+    if settings.syslog_enabled:
+        await enqueue_event(
+            db,
+            integration="syslog",
+            event_type=event_type,
+            reference=reference,
+            correlation_id=correlation_id,
+            target=f"{settings.syslog_host}:{settings.syslog_port}",
+            payload=payload,
+        )
+
+
 def _approval_snapshot(record) -> dict:
     return {
         "request_id": record.request_id,
@@ -65,6 +101,13 @@ async def notify_approval_requested(db: AsyncSession, record) -> None:
             target="teams_webhook",
             payload=payload,
         )
+    await _enqueue_siem(
+        db,
+        event_type="approval_requested",
+        reference=record.request_id,
+        correlation_id=record.correlation_id,
+        payload=payload,
+    )
 
 
 async def notify_approval_decided(db: AsyncSession, record) -> None:
@@ -94,6 +137,13 @@ async def notify_approval_decided(db: AsyncSession, record) -> None:
             target="teams_webhook",
             payload=payload,
         )
+    await _enqueue_siem(
+        db,
+        event_type="approval_decided",
+        reference=record.request_id,
+        correlation_id=record.correlation_id,
+        payload=payload,
+    )
     if (
         settings.servicenow_enabled
         and settings.servicenow_incident_on_deny
@@ -171,6 +221,13 @@ async def notify_containment(
             target="incident",
             payload=payload,
         )
+    await _enqueue_siem(
+        db,
+        event_type="containment_action",
+        reference=reference,
+        correlation_id=correlation_id,
+        payload=payload,
+    )
 
 
 async def notify_killswitch(
@@ -216,6 +273,13 @@ async def notify_killswitch(
             target="incident",
             payload=payload,
         )
+    await _enqueue_siem(
+        db,
+        event_type="killswitch_activated",
+        reference=reference,
+        correlation_id=None,
+        payload=payload,
+    )
 
 
 async def enqueue_sentinel_decisions(
@@ -261,3 +325,59 @@ async def enqueue_sentinel_decisions(
                 )
             },
         )
+
+
+async def enqueue_siem_decisions(
+    db: AsyncSession, *, correlation_id: str, sequence: int | None
+) -> None:
+    """Enqueue Splunk/syslog export rows for decisions JUST recorded.
+
+    Same contract as enqueue_sentinel_decisions: called by the gateway
+    strictly after the §18 recording commit has succeeded, in its own
+    transaction, carrying the same canonical decision-record shape, so
+    every SIEM sink sees an identical copy of the evidence.
+    """
+    if not (settings.splunk_hec_enabled or settings.syslog_enabled):
+        return
+    query = select(PolicyDecisionRecord).where(
+        PolicyDecisionRecord.correlation_id == correlation_id
+    )
+    if sequence is not None:
+        query = query.where(PolicyDecisionRecord.sequence == sequence)
+    result = await db.execute(query)
+    for record in result.scalars().all():
+        created = record.created_at or utcnow()
+        payload = {
+            "record": decision_record(
+                created_at_iso=created.isoformat(),
+                correlation_id=record.correlation_id,
+                agent_id=record.agent_id,
+                policy_id=record.policy_id,
+                tool_name=record.tool_name,
+                decision=record.decision,
+                enforcement_mode=record.enforcement_mode,
+                reason=record.reason,
+                sequence=record.sequence,
+                latency_ms=record.latency_ms,
+            )
+        }
+        if settings.splunk_hec_enabled:
+            await enqueue_event(
+                db,
+                integration="splunk",
+                event_type="decision_export",
+                reference=str(record.id),
+                correlation_id=correlation_id,
+                target=settings.splunk_hec_index or "splunk_hec",
+                payload=payload,
+            )
+        if settings.syslog_enabled:
+            await enqueue_event(
+                db,
+                integration="syslog",
+                event_type="decision_export",
+                reference=str(record.id),
+                correlation_id=correlation_id,
+                target=f"{settings.syslog_host}:{settings.syslog_port}",
+                payload=payload,
+            )
