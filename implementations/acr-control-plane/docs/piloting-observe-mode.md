@@ -111,3 +111,10 @@ were issued under — a flip neither approves, denies, nor orphans them.
 - An escalation volume your approvers have seen and accepted.
 - A promotion decision a skeptic can audit: the report, the window,
   and the transition record with its reason, all in the evidence trail.
+
+## Related
+
+When the policies themselves change, [policy simulation](policy-simulation.md)
+replays recorded traffic against the candidate bundle before promotion —
+and, while input retention is on, activation requires the simulation
+report for the exact bundle being promoted.

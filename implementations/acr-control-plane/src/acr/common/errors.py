@@ -152,6 +152,11 @@ class PolicyValidationError(ACRError):
     error_code = "POLICY_VALIDATION_ERROR"
 
 
+class PolicySimulationNotFoundError(ACRError):
+    status_code = 404
+    error_code = "POLICY_SIMULATION_NOT_FOUND"
+
+
 class EvidenceBundleNotFoundError(ACRError):
     status_code = 404
     error_code = "EVIDENCE_BUNDLE_NOT_FOUND"

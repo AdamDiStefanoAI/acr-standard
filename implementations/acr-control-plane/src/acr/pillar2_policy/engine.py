@@ -197,6 +197,19 @@ async def evaluate_policy(
     if result.get("operator_identity") != expected_operator:
         raise PolicyEngineError("Missing or stale operator policy bundle")
 
+    return parse_opa_result(result, elapsed_ms=elapsed_ms)
+
+
+def parse_opa_result(result: dict, *, elapsed_ms: int) -> PolicyEvaluationResult:
+    """Derive the final decision from a raw `data.acr` OPA result.
+
+    Shared by the live path (evaluate_policy, after it has verified the
+    bundle identities carried in the result) and by offline policy
+    simulation (acr.pillar2_policy.simulation), which evaluates a
+    candidate bundle with the OPA binary and must derive decisions by
+    exactly the same rules — otherwise a simulation could report flips
+    that are really parser drift.
+    """
     # Approval resumption requires all identities from this evaluation. Legacy
     # bundles remain usable for ordinary evaluation but cannot resume approvals.
     studio = result.get("studio_identity")

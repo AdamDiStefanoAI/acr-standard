@@ -6,13 +6,22 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from acr.common.errors import PolicySimulationNotFoundError
 from acr.common.operator_auth import OperatorPrincipal, require_operator_roles
 from acr.config import settings
 from acr.db.database import get_db
+from acr.pillar2_policy.simulation import (
+    SimulationReport,
+    build_release_candidate_bundle,
+    get_simulation,
+    render_markdown_summary,
+    run_simulation,
+)
 from acr.policy_studio import service
 from acr.policy_studio.core_bundle import core_identity
 from acr.policy_studio.distribution import build_active_runtime_bundle, build_opa_discovery_document
 from acr.policy_studio.models import (
+    PolicyActivateRequest,
     PolicyBundleResponse,
     PolicyDraftResponse,
     PolicyDraftUpsertRequest,
@@ -20,6 +29,7 @@ from acr.policy_studio.models import (
     PolicyReleaseResponse,
     PolicySimulationRequest,
     PolicySimulationResponse,
+    PolicySimulationRunRequest,
     PolicyValidationResponse,
 )
 from acr.policy_studio.releases import (
@@ -173,10 +183,16 @@ async def discovery_alias() -> Response:
 @router.post("/releases/{release_id}/activate", response_model=PolicyReleaseResponse)
 async def activate(
     release_id: str,
+    body: PolicyActivateRequest | None = None,
     db: AsyncSession = Depends(get_db),
     principal: OperatorPrincipal = Depends(require_operator_roles("security_admin")),
 ) -> PolicyReleaseResponse:
-    record = await activate_policy_release(db, release_id=release_id, actor=principal.subject)
+    record = await activate_policy_release(
+        db,
+        release_id=release_id,
+        actor=principal.subject,
+        simulation_report_id=body.simulation_report_id if body else None,
+    )
     return _to_release_response(record)
 
 
@@ -250,3 +266,58 @@ async def get_opa_discovery_document(
     """
     document = build_opa_discovery_document(service_base_url=str(request.base_url).rstrip("/"))
     return JSONResponse(document)
+
+
+# ── Policy simulations (v1.5.0 WS2) ───────────────────────────────────────────
+# Replay of retained evaluation inputs against a candidate release's
+# bundle. Running a simulation is a security_admin action; reports are
+# evidence, so auditors can read them.
+
+simulation_router = APIRouter(prefix="/acr/policy-simulations", tags=["Policy Simulations"])
+
+
+@simulation_router.post("", status_code=201, response_model=SimulationReport)
+async def create_simulation(
+    body: PolicySimulationRunRequest,
+    db: AsyncSession = Depends(get_db),
+    principal: OperatorPrincipal = Depends(require_operator_roles("security_admin")),
+) -> SimulationReport:
+    artifact, _release = await build_release_candidate_bundle(db, body.release_id)
+    record = await run_simulation(
+        db,
+        actor=principal.subject,
+        window_start=body.window_start,
+        window_end=body.window_end,
+        bundle_bytes=artifact.bytes_data,
+        bundle_label=body.release_id,
+    )
+    await db.commit()
+    return SimulationReport.model_validate(record.report)
+
+
+@simulation_router.get("/{run_id}", response_model=SimulationReport)
+async def fetch_simulation(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: OperatorPrincipal = Depends(
+        require_operator_roles("agent_admin", "security_admin", "auditor")
+    ),
+) -> SimulationReport:
+    record = await get_simulation(db, run_id)
+    if record is None:
+        raise PolicySimulationNotFoundError(f"Simulation '{run_id}' not found")
+    return SimulationReport.model_validate(record.report)
+
+
+@simulation_router.get("/{run_id}/summary.md")
+async def fetch_simulation_summary(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: OperatorPrincipal = Depends(
+        require_operator_roles("agent_admin", "security_admin", "auditor")
+    ),
+) -> Response:
+    record = await get_simulation(db, run_id)
+    if record is None:
+        raise PolicySimulationNotFoundError(f"Simulation '{run_id}' not found")
+    return Response(content=render_markdown_summary(record.report), media_type="text/markdown")

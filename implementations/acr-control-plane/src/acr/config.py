@@ -95,6 +95,27 @@ class Settings(BaseSettings):
     executor_credential_ttl_seconds: int = 300
     executor_timeout_seconds: float = 8.0
 
+    # ── Evaluation-input retention & policy simulation (v1.5.0 WS2) ─────────
+    # Retention is OFF by default (Adam's decision, 2026-11-22): evaluation
+    # inputs are real payloads, so storing them is an explicit opt-in per
+    # deployment. When on, the effective evaluation input (agent manifest,
+    # action, enriched context) is redacted BEFORE storage and kept for the
+    # retention window so policy changes can be replayed against real
+    # traffic (policy simulation). Expired inputs are purged by a background
+    # loop; the decision records themselves are never purged by it.
+    evaluation_input_retention_enabled: bool = False
+    evaluation_input_retention_days: int = 30
+    # JSON array of dot-paths into the effective evaluation input
+    # ({"agent": ..., "action": ..., "context": ...}), e.g.
+    # ["action.parameters.customer_id", "context.api_key"]. Matching values
+    # are replaced with a fixed marker before the payload is stored.
+    evaluation_input_redaction_fields_json: str = ""
+    evaluation_input_purge_interval_seconds: int = 3600
+    # Promotion gate: while retention is on, activating a managed policy
+    # release requires a simulation report whose bundle hash matches the
+    # exact bundle activation would distribute. Inert when retention is off.
+    policy_simulation_gate_enabled: bool = True
+
     # ── Policy bundle publishing ─────────────────────────────────────────────
     # When True, bundle download and OPA discovery endpoints require operator
     # authentication.  OPA's native bundle mechanism does not send auth headers
@@ -283,6 +304,19 @@ def oidc_role_mapping() -> dict[str, list[str]]:
             raise RuntimeError("OIDC_ROLE_MAPPING_JSON values must be strings or arrays")
         normalized[str(external_role)] = [str(role) for role in internal_roles]
     return normalized
+
+
+@lru_cache(maxsize=1)
+def evaluation_input_redaction_fields() -> list[str]:
+    if not settings.evaluation_input_redaction_fields_json:
+        return []
+    try:
+        raw = json.loads(settings.evaluation_input_redaction_fields_json)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("EVALUATION_INPUT_REDACTION_FIELDS_JSON is not valid JSON") from exc
+    if not isinstance(raw, list):
+        raise RuntimeError("EVALUATION_INPUT_REDACTION_FIELDS_JSON must decode to an array")
+    return [str(item) for item in raw]
 
 
 @lru_cache(maxsize=1)
