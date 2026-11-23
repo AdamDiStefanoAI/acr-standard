@@ -40,6 +40,7 @@
           <button class="nav-link" data-section="policy-studio">Policy Studio</button>
           <button class="nav-link" data-section="approvals">Approvals</button>
           <button class="nav-link" data-section="events">Events</button>
+          <button class="nav-link" data-section="auditor">Decision Explorer</button>
           <button class="nav-link" data-section="drift">Drift</button>
           <button class="nav-link" data-section="containment">Containment</button>
         </nav>
@@ -406,6 +407,59 @@
                 <button class="button primary" type="submit">Load Trace</button>
               </form>
               <pre id="trace-output" class="code-shell">No trace loaded yet.</pre>
+            </section>
+          </div>
+        </section>
+
+        <section id="auditor" class="page">
+          <div class="grid two-up">
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Decision Explorer</h3>
+                <button class="button ghost small" data-action="load-decisions">Refresh</button>
+              </div>
+              <form id="decisions-filter" class="form-stack">
+                <div class="inline-grid">
+                  <input name="agent_id" placeholder="agent_id" />
+                  <input name="tool_name" placeholder="tool name" />
+                </div>
+                <div class="inline-grid">
+                  <select name="decision">
+                    <option value="">any decision</option>
+                    <option value="allow">allow</option>
+                    <option value="deny">deny</option>
+                    <option value="modify">modify</option>
+                    <option value="escalate">escalate</option>
+                  </select>
+                  <select name="enforcement_mode">
+                    <option value="">any mode</option>
+                    <option value="enforce">enforce</option>
+                    <option value="observe">observe</option>
+                  </select>
+                </div>
+                <div class="inline-grid">
+                  <input name="reason_contains" placeholder="reason contains" />
+                  <input name="correlation_id" placeholder="correlation_id" />
+                </div>
+                <div class="inline-grid">
+                  <input name="window_start" placeholder="window start (ISO 8601)" />
+                  <input name="window_end" placeholder="window end (ISO 8601)" />
+                </div>
+                <button class="button ghost" type="submit">Apply Filters</button>
+              </form>
+              <div id="decisions-table" class="table-shell"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Decision Chain</h3>
+                <span class="hint">Full chain for one action, missing links stated</span>
+              </div>
+              <form id="chain-form" class="form-stack">
+                <input name="identifier" placeholder="correlation_id or decision id" required />
+                <button class="button primary" type="submit">Load Chain</button>
+              </form>
+              <pre id="chain-output" class="code-shell">No chain loaded yet.</pre>
             </section>
           </div>
         </section>

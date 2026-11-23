@@ -39,6 +39,27 @@ async def _run_simulation(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _run_evidence_package(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from acr.db.database import async_session_factory
+    from acr.pillar4_observability.evidence_package import write_evidence_package
+
+    async with async_session_factory() as db:
+        result = await write_evidence_package(
+            db,
+            actor=args.actor,
+            window_start=args.window_start,
+            window_end=args.window_end,
+            output=Path(args.output),
+        )
+    print(
+        f"Evidence package written to {result['output']} "
+        f"({result['file_count']} files, chain head {result['chain_head_sha256']})."
+    )
+    return 0
+
+
 async def _run_purge() -> int:
     from acr.db.database import async_session_factory
     from acr.pillar4_observability.input_retention import purge_expired_inputs
@@ -76,11 +97,30 @@ def main() -> None:
         help="Delete payloads of retained evaluation inputs past their expiry",
     )
 
+    evidence = subparsers.add_parser(
+        "evidence-package",
+        help="Generate a verifiable runtime evidence package for a window",
+    )
+    evidence.add_argument(
+        "--output",
+        required=True,
+        help="Output path: a .zip file, or a directory to write the package into",
+    )
+    evidence.add_argument(
+        "--window-start", required=True, type=_parse_window, help="ISO 8601 window start"
+    )
+    evidence.add_argument(
+        "--window-end", required=True, type=_parse_window, help="ISO 8601 window end"
+    )
+    evidence.add_argument("--actor", default="cli", help="Actor recorded in the package manifest")
+
     args = parser.parse_args()
     if args.command == "simulate":
         raise SystemExit(asyncio.run(_run_simulation(args)))
     if args.command == "purge-evaluation-inputs":
         raise SystemExit(asyncio.run(_run_purge()))
+    if args.command == "evidence-package":
+        raise SystemExit(asyncio.run(_run_evidence_package(args)))
 
 
 if __name__ == "__main__":

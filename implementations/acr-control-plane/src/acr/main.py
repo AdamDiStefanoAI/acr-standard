@@ -257,6 +257,7 @@ async def generic_error_handler(request: Request, exc: Exception) -> JSONRespons
 from acr.gateway.router import router as gateway_router  # noqa: E402
 from acr.operator_keys.router import router as operator_keys_router  # noqa: E402
 from acr.pillar1_identity.router import router as identity_router  # noqa: E402
+from acr.pillar4_observability.router import router as auditor_router  # noqa: E402
 from acr.pillar5_containment.router import router as containment_router  # noqa: E402
 from acr.pillar6_authority.router import router as authority_router  # noqa: E402
 from acr.policy_studio.router import (  # noqa: E402
@@ -269,6 +270,7 @@ app.include_router(gateway_router)
 app.include_router(auth_router)
 app.include_router(identity_router)
 app.include_router(operator_keys_router)
+app.include_router(auditor_router)
 app.include_router(policy_studio_router)
 app.include_router(simulation_router)
 # When require_bundle_auth is False, override the bundle auth dependency with

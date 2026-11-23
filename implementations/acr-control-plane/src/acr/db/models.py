@@ -387,6 +387,11 @@ class OperatorCredentialRecord(Base):
     created_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
     revoked_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Mandatory expiry for time-boxed auditor grants (v1.5.0 WS3, migration
+    # 0019). NULL for standing operator credentials; an auditor grant is
+    # only ever issued with this set, and authentication rejects it at or
+    # after the expiry instant.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True

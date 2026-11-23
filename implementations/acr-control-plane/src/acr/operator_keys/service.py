@@ -3,14 +3,16 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from acr.common.errors import OperatorCredentialNotFoundError
+from acr.common.errors import OperatorCredentialNotFoundError, PolicyValidationError
 from acr.common.time import utcnow
+from acr.config import settings
 from acr.db.models import OperatorCredentialRecord
-from acr.operator_keys.models import OperatorKeyCreateRequest
+from acr.operator_keys.models import AuditorGrantCreateRequest, OperatorKeyCreateRequest
 
 
 def hash_operator_key(api_key: str) -> str:
@@ -38,6 +40,45 @@ async def create_operator_key(
         created_by=created_by,
     )
     db.add(record)
+    await db.flush()
+    await db.refresh(record)
+    return record, api_key
+
+
+async def create_auditor_grant(
+    db: AsyncSession,
+    *,
+    req: AuditorGrantCreateRequest,
+    created_by: str,
+) -> tuple[OperatorCredentialRecord, str]:
+    """Create a read-only auditor credential with a mandatory expiry.
+
+    The role set is forced to exactly {"auditor"}: a grant can never be
+    widened at issuance, and the auth layer treats an auditor-only
+    principal as read-only and scope-limited on every route. Lifetime is
+    capped at settings.auditor_grant_max_lifetime_days.
+    """
+    now = utcnow()
+    if req.expires_at is not None:
+        expires_at = req.expires_at
+        if expires_at.tzinfo is None:
+            raise PolicyValidationError("Auditor grant expires_at must include a timezone")
+    else:
+        assert req.lifetime_hours is not None  # enforced by the request model
+        expires_at = now + timedelta(hours=req.lifetime_hours)
+    max_days = max(1, settings.auditor_grant_max_lifetime_days)
+    if expires_at <= now:
+        raise PolicyValidationError("Auditor grant expiry must be in the future")
+    if expires_at > now + timedelta(days=max_days):
+        raise PolicyValidationError(
+            f"Auditor grant lifetime exceeds the configured maximum of {max_days} day(s)"
+        )
+    record, api_key = await create_operator_key(
+        db,
+        req=OperatorKeyCreateRequest(name=req.name, subject=req.subject, roles=["auditor"]),
+        created_by=created_by,
+    )
+    record.expires_at = expires_at
     await db.flush()
     await db.refresh(record)
     return record, api_key

@@ -367,6 +367,25 @@ async function loadEvents(params = {}) {
   ]);
 }
 
+async function loadDecisions(params = {}) {
+  const query = new URLSearchParams();
+  ["agent_id", "tool_name", "decision", "enforcement_mode", "reason_contains", "correlation_id", "window_start", "window_end"].forEach((key) => {
+    if (params[key]) query.set(key, params[key]);
+  });
+  query.set("limit", "50");
+  const suffix = query.toString() ? `?${query}` : "";
+  const payload = await apiFetch(`/acr/decisions${suffix}`);
+  renderTable("decisions-table", payload.items, [
+    { label: "Created", key: "created_at" },
+    { label: "Agent", key: "agent_id" },
+    { label: "Decision", key: "decision" },
+    { label: "Mode", key: "enforcement_mode" },
+    { label: "Tool", key: "tool_name" },
+    { label: "Seq", render: (row) => String(row.sequence ?? "") },
+    { label: "Correlation", key: "correlation_id" },
+  ]);
+}
+
 async function loadMetrics() {
   const response = await fetch("/acr/metrics", { headers: sessionHeaders() });
   const text = await response.text();
@@ -411,6 +430,7 @@ async function refreshDashboard() {
     loadAgents(),
     loadApprovals(),
     loadEvents(),
+    loadDecisions(),
     loadContainment(),
     loadBaselineVersions(),
     loadMetrics(),
@@ -614,6 +634,28 @@ function installForms() {
     try {
       await loadEvents(readForm(event.target));
       setMessage("Event filters applied.");
+    } catch (error) {
+      setMessage(error.message, true);
+    }
+  });
+
+  document.getElementById("decisions-filter").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await loadDecisions(readForm(event.target));
+      setMessage("Decision filters applied.");
+    } catch (error) {
+      setMessage(error.message, true);
+    }
+  });
+
+  document.getElementById("chain-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const { identifier } = readForm(event.target);
+      const payload = await apiFetch(`/acr/decisions/chain/${encodeURIComponent(identifier)}`);
+      document.getElementById("chain-output").textContent = JSON.stringify(payload, null, 2);
+      setMessage("Decision chain loaded.");
     } catch (error) {
       setMessage(error.message, true);
     }
@@ -890,6 +932,7 @@ function installRefreshers() {
   document.querySelectorAll("[data-action='load-policy-drafts']").forEach((button) => button.addEventListener("click", () => loadPolicyDrafts().catch((error) => setMessage(error.message, true))));
   document.querySelectorAll("[data-action='load-approvals']").forEach((button) => button.addEventListener("click", () => loadApprovals().catch((error) => setMessage(error.message, true))));
   document.querySelectorAll("[data-action='load-events']").forEach((button) => button.addEventListener("click", () => loadEvents().catch((error) => setMessage(error.message, true))));
+  document.querySelectorAll("[data-action='load-decisions']").forEach((button) => button.addEventListener("click", () => loadDecisions().catch((error) => setMessage(error.message, true))));
   document.querySelectorAll("[data-action='load-containment']").forEach((button) => button.addEventListener("click", () => loadContainment().catch((error) => setMessage(error.message, true))));
   document.querySelectorAll("[data-action='load-metrics']").forEach((button) => button.addEventListener("click", () => loadMetrics().catch((error) => setMessage(error.message, true))));
 }
