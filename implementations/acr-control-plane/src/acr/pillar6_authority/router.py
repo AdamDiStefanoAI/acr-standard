@@ -27,6 +27,8 @@ def _to_response(record) -> ApprovalResponse:
         status=record.status,
         decision=record.decision,
         decided_by=record.decided_by,
+        decided_channel=getattr(record, "decided_channel", None),
+        chat_actor_id=getattr(record, "chat_actor_id", None),
         decision_reason=record.decision_reason,
         sla_minutes=record.sla_minutes,
         expires_at=record.expires_at,

@@ -74,6 +74,13 @@ async def create_approval_request(
     await db.flush()
     await db.refresh(record)
 
+    # Integration notifications (v1.5.0 WS4): enqueue approval-requested
+    # events for the async outbox. Savepoint-guarded inside enqueue_event,
+    # so this can never affect the approval itself.
+    from acr.integrations.events import notify_approval_requested
+
+    await notify_approval_requested(db, record)
+
     logger.info(
         "approval_request_created",
         request_id=request_id,
@@ -154,6 +161,9 @@ async def approve(
     record.decided_at = utcnow()
     await db.flush()
     logger.info("approval_approved", request_id=request_id, decided_by=decided_by)
+    from acr.integrations.events import notify_approval_decided
+
+    await notify_approval_decided(db, record)
     return record
 
 
@@ -179,6 +189,9 @@ async def deny(
     record.decided_at = utcnow()
     await db.flush()
     logger.info("approval_denied", request_id=request_id, decided_by=decided_by)
+    from acr.integrations.events import notify_approval_decided
+
+    await notify_approval_decided(db, record)
     return record
 
 
@@ -211,6 +224,9 @@ async def override(
         decided_by=decided_by,
         reason=reason,
     )
+    from acr.integrations.events import notify_approval_decided
+
+    await notify_approval_decided(db, record)
     return record
 
 
@@ -295,5 +311,9 @@ async def expire_timed_out_approvals(db: AsyncSession) -> int:
         count += 1
     if count:
         await db.flush()
+        from acr.integrations.events import notify_approval_decided
+
+        for record in records:
+            await notify_approval_decided(db, record)
         logger.info("approvals_timed_out", count=count)
     return count

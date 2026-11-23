@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from acr.common.operator_auth import OperatorPrincipal, require_operator_roles
+from acr.db.database import get_db
 from acr.pillar5_containment.killswitch import (
     get_kill_status,
     kill_agent,
@@ -19,15 +21,28 @@ router = APIRouter(prefix="/acr/containment", tags=["Containment"])
 @router.post("/kill", response_model=KillSwitchState)
 async def kill(
     body: KillRequest,
+    db: AsyncSession = Depends(get_db),
     principal: OperatorPrincipal = Depends(
         require_operator_roles("security_admin", "killswitch_operator")
     ),
 ) -> KillSwitchState:
-    return await kill_agent(
+    state = await kill_agent(
         body.agent_id,
         reason=body.reason,
         operator_id=body.operator_id or principal.subject,
     )
+    # Integration alerts (v1.5.0 WS4): async outbox, best-effort — the
+    # kill has already taken effect; alerting can never affect it.
+    from acr.integrations.events import notify_killswitch
+
+    await notify_killswitch(
+        db,
+        agent_id=body.agent_id,
+        reason=body.reason,
+        operator_id=body.operator_id or principal.subject,
+    )
+    await db.commit()
+    return state
 
 
 @router.post("/restore", response_model=KillSwitchState)

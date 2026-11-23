@@ -142,6 +142,33 @@ async def _evaluation_input_purge_loop() -> None:
             log.warning("evaluation_input_purge_error", error=str(exc))
 
 
+async def _integration_outbox_loop() -> None:
+    """Drain the integration outbox (v1.5.0 WS4).
+
+    Delivers Slack/Teams/ServiceNow/Sentinel events asynchronously with
+    retry, backoff, and dead-lettering; every attempt is recorded. A
+    no-op while every integration is disabled (the outbox stays empty).
+    Delivery problems surface here and in the outbox rows — never in
+    the enforcement paths that produced the events.
+    """
+    from acr.db.database import async_session_factory as _outbox_session_factory
+    from acr.integrations.outbox import process_outbox_once
+
+    log = structlog.get_logger(__name__)
+    interval = max(1, settings.integrations_outbox_poll_seconds)
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            async with _outbox_session_factory() as db:
+                counts = await process_outbox_once(db)
+            if counts["dead_letter"]:
+                log.error("integration_outbox_dead_letters", **counts)
+            elif counts["delivered"] or counts["failed"]:
+                log.info("integration_outbox_drain", **counts)
+        except Exception as exc:
+            log.warning("integration_outbox_error", error=str(exc))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup: reject weak secrets in staging/production environments
@@ -175,6 +202,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 "policy_drafts",
                 "evaluation_inputs",
                 "policy_simulations",
+                "integration_outbox",
+                "integration_delivery_attempts",
             }
 
             def _missing_tables(sync_conn):
@@ -196,11 +225,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     retention_task = asyncio.create_task(_retention_loop())
     heartbeat_task = asyncio.create_task(_heartbeat_sweep_loop())
     input_purge_task = asyncio.create_task(_evaluation_input_purge_loop())
+    outbox_task = asyncio.create_task(_integration_outbox_loop())
 
     yield
 
     # Shutdown: cancel background tasks
-    for task in (expiry_task, retention_task, heartbeat_task, input_purge_task):
+    for task in (expiry_task, retention_task, heartbeat_task, input_purge_task, outbox_task):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
@@ -255,6 +285,7 @@ async def generic_error_handler(request: Request, exc: Exception) -> JSONRespons
 # ── Routers ───────────────────────────────────────────────────────────────────
 
 from acr.gateway.router import router as gateway_router  # noqa: E402
+from acr.integrations.router import router as integrations_router  # noqa: E402
 from acr.operator_keys.router import router as operator_keys_router  # noqa: E402
 from acr.pillar1_identity.router import router as identity_router  # noqa: E402
 from acr.pillar4_observability.router import router as auditor_router  # noqa: E402
@@ -285,6 +316,7 @@ if not settings.require_bundle_auth:
 app.include_router(bundle_router)
 app.include_router(containment_router)
 app.include_router(authority_router)
+app.include_router(integrations_router)
 app.include_router(console_router)
 app.mount("/console-assets", console_static_files, name="console-assets")
 
