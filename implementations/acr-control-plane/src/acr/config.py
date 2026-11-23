@@ -116,6 +116,12 @@ class Settings(BaseSettings):
     # exact bundle activation would distribute. Inert when retention is off.
     policy_simulation_gate_enabled: bool = True
 
+    # ── Auditor grants (v1.5.0 WS3) ───────────────────────────────────────────
+    # Auditor access is issued as a time-boxed, read-only grant, never as a
+    # standing credential. The cap is configurable per deployment; 30 days
+    # is the default maximum lifetime for one grant.
+    auditor_grant_max_lifetime_days: int = 30
+
     # ── Policy bundle publishing ─────────────────────────────────────────────
     # When True, bundle download and OPA discovery endpoints require operator
     # authentication.  OPA's native bundle mechanism does not send auth headers

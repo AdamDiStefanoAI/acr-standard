@@ -91,6 +91,13 @@ root = "../.."
 [tool.hatch.build.targets.wheel]
 packages = ["src/acr"]
 
+# The WS3 evidence package generator embeds the framework control
+# mapping in every package. Its source of truth stays
+# docs/compliance/control-mapping.md; the wheel carries a copy inside
+# the package so installed CLIs can embed it without a repo checkout.
+[tool.hatch.build.targets.wheel.force-include]
+"docs/compliance/control-mapping.md" = "acr/_compliance/control-mapping.md"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

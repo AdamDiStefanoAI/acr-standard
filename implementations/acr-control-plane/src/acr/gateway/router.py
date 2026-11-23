@@ -40,6 +40,7 @@ from acr.common.errors import (
     PolicyEngineError,
     RuntimeControlDependencyError,
 )
+from acr.common.operator_auth import reject_auditor_operator_key
 from acr.common.redis_client import get_redis_or_none
 from acr.common.time import iso_utcnow
 from acr.config import runtime_dependencies_fail_closed, settings
@@ -307,6 +308,11 @@ async def _should_run_drift_check(agent_id: str) -> bool:
 async def evaluate(
     req: EvaluateRequest,
     background_tasks: BackgroundTasks,
+    # An auditor credential presented to the write path is rejected as an
+    # auditor (403) before agent-token handling: auditor access is
+    # read-only everywhere, including routes that do not use operator
+    # auth (v1.5.0 WS3).
+    _auditor_guard: None = Depends(reject_auditor_operator_key),
     authorized_agent_id: str = Depends(require_agent_token),
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
