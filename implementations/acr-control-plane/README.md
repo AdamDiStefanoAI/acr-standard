@@ -251,6 +251,16 @@ The disposable full-stack CI run validates its own fixture/override setup. A sep
 
 See the [captured evidence walkthrough](../../docs/evidence-walkthrough.md) for real synthetic allow/deny responses, observed tool effects, and the limits of the captured audit chain.
 
+## Windows
+
+Windows is supported in two distinct ways; they are not the same claim.
+
+**The control-plane stack** (gateway, kill switch, OPA, Postgres, Redis) ships as Linux containers. On Windows it runs under Docker Desktop with the WSL2 backend, using exactly the Quick Start above: the same `docker compose` commands, the same `.env` file, the same ports. There is no native Windows service packaging; the containers are Linux containers on every host OS. The Compose file uses named volumes plus one relative bind mount (`./operator-policies`), which Docker Desktop handles under WSL2.
+
+**The Python package** — the SDK (`acr.sdk`), the `acr` CLI, the unit test suite, and the sample agent — runs natively on Windows with Python 3.11 or 3.12. PowerShell setup commands are in [CONTRIBUTING.md](../../CONTRIBUTING.md) and the [sample agent README](examples/sample_agent/README.md). One Windows-specific detail is handled automatically: Windows has no system timezone database for Python's `zoneinfo`, so the install includes the `tzdata` package on Windows only, and timezone rendering (for example, approval decision timestamps in America/New_York) matches Linux and macOS.
+
+CI runs the unit test suite on `windows-latest` (`.github/workflows/acr-windows.yml`) alongside the Linux jobs, so the native-Windows behavior of the package and test suite is verified on every change. The container stack itself is exercised by the Linux CI jobs; on a Windows host it is the same images under Docker Desktop, not a separately built or tested variant.
+
 ## Core API Surface
 
 Full API docs live in [docs/api.md](docs/api.md).

@@ -59,6 +59,14 @@ dependencies = [
     # Utilities
     "python-multipart>=0.0.18,<1.0.0",
     "anyio>=4.7.0,<5.0.0",
+
+    # Timezone database — Windows has no system tz database for
+    # zoneinfo, so the IANA data ships with the install there. Without
+    # it, ZoneInfo("America/New_York") raises ZoneInfoNotFoundError at
+    # import time on native Windows (decided-card timestamps in
+    # acr.integrations.slack render in America/New_York). The marker
+    # keeps this off Linux/macOS, which have a system database.
+    "tzdata>=2024.1; sys_platform == 'win32'",
 ]
 
 [project.scripts]
