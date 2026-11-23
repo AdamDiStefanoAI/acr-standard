@@ -11,6 +11,7 @@ import gzip
 import hashlib
 import io
 import json
+import ntpath
 import os
 import re
 import tarfile
@@ -57,20 +58,53 @@ def managed_core_files() -> dict[str, bytes]:
     return result
 
 
+def _windows_canonical_form(text: str) -> str:
+    """Canonical string form of a resolved Windows path, for comparison.
+
+    Path.resolve() on Windows does not promise one string form per file: a
+    path reached through the Kubernetes projection symlink chain can come
+    back with an extended-length prefix (\\\\?\\C:\\... or \\\\?\\UNC\\...)
+    while the same file reached directly comes back plain, and the two
+    spellings then compare unequal as strings. Strip the extended-length
+    prefixes and normalize with ntpath semantics (dot segments collapsed,
+    separators unified, case folded) so equivalent spellings of one file
+    produce one form. ntpath is used explicitly so this transformation is
+    identical on every host and unit-testable from Linux.
+    """
+    if text.startswith("\\\\?\\UNC\\"):
+        text = "\\\\" + text[len("\\\\?\\UNC\\") :]
+    elif text.startswith("\\\\?\\"):
+        text = text[len("\\\\?\\") :]
+    return ntpath.normcase(ntpath.normpath(text))
+
+
+def _canonical_path(path: Path) -> str:
+    """The fully resolved path as a comparable string, canonicalized per OS."""
+    text = str(path.resolve())
+    if os.name == "nt":
+        return _windows_canonical_form(text)
+    return text
+
+
 def _same_file(first: Path, second: Path) -> bool:
     """Whether two paths name the same filesystem object.
 
-    Stat identity (device + inode/file index) is compared instead of resolved
-    path strings: on Windows, Path.resolve() can return different string forms
-    for the same file reached directly and through the Kubernetes projection
-    symlink chain (extended-length prefixes, short names), which made the
-    backing-file mapping check in extension_files() report a verified backing
-    copy as unmapped on Windows while the same layout passed on Linux.
+    Identity is accepted from either of two independent signals, because on
+    Windows each can fail on its own for the Kubernetes projection layout
+    (a visible symlink -> ..data -> timestamped backing directory): the
+    stat-based check can raise or disagree across the symlink chain, and
+    resolved path strings can differ in form for one file. The signals are
+    stat identity (device + inode/file index) and equality of the canonical
+    fully resolved paths (see _windows_canonical_form). Two genuinely
+    different files satisfy neither: their stat identities differ and their
+    resolved locations differ.
     """
     try:
-        return os.path.samefile(first, second)
+        if os.path.samefile(first, second):
+            return True
     except OSError:
-        return first.resolve() == second.resolve()
+        pass
+    return _canonical_path(first) == _canonical_path(second)
 
 
 def validate_extension(source: str, *, name: str) -> None:
@@ -142,8 +176,19 @@ def extension_files(directory: str | Path | None) -> dict[str, bytes]:
             )
         if is_backing:
             visible = root.joinpath(*relative.parts[1:])
-            if not visible.is_file() or not _same_file(visible, path):
-                raise ValueError(f"Unmapped Kubernetes policy backing file: {path}")
+            # Identity is the whole check: _same_file accepts only the same
+            # filesystem object (by stat) or the same canonical resolved
+            # location, so a missing or different visible entry still refuses.
+            # Gating on visible.is_file() first would short-circuit the
+            # identity proof on platforms where stat follows the projection
+            # symlink chain differently than resolve() does.
+            if not _same_file(visible, path):
+                raise ValueError(
+                    f"Unmapped Kubernetes policy backing file: {path} "
+                    f"(visible counterpart {visible} canonicalizes to "
+                    f"{_canonical_path(visible)!r}, backing file to "
+                    f"{_canonical_path(path)!r})"
+                )
             continue  # Only the verified backing copy of a visible file is deduplicated.
         payload = path.read_bytes()
         if path.name in CORE_FILES:

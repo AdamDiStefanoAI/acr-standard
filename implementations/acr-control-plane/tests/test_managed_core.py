@@ -20,6 +20,7 @@ from acr.common.errors import PolicyEngineError
 from acr.pillar2_policy.engine import evaluate_policy
 from acr.policy_studio.core_bundle import (
     _same_file,
+    _windows_canonical_form,
     assemble_bundle,
     core_identity,
     core_sources,
@@ -590,3 +591,66 @@ def test_projection_refuses_backing_that_maps_to_a_different_file(tmp_path):
     (tmp_path / "custom.rego").symlink_to("other.rego")
     with pytest.raises(ValueError, match="Unmapped Kubernetes"):
         extension_files(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "first,second",
+    [
+        # Extended-length prefix on one side only (the resolve() divergence
+        # seen when one side is reached through the projection symlink chain).
+        (r"\\?\C:\x\..2026\f.rego", r"C:\x\..2026\f.rego"),
+        (r"\\?\UNC\server\share\..2026\f.rego", r"\\server\share\..2026\f.rego"),
+        # Case and separator spellings of one file.
+        (r"C:\X\Sub\F.REGO", r"c:\x\sub\f.rego"),
+        ("C:/x/..2026/f.rego", r"C:\x\..2026\f.rego"),
+        # A real traversal segment collapses identically on both sides.
+        (r"\\?\C:\x\..\2026\f.rego", r"C:\2026\f.rego"),
+    ],
+)
+def test_windows_canonical_form_unifies_spellings_of_one_file(first, second):
+    assert _windows_canonical_form(first) == _windows_canonical_form(second)
+
+
+@pytest.mark.parametrize(
+    "first,second",
+    [
+        (r"C:\x\..2026\f.rego", r"C:\x\..2026\g.rego"),
+        (r"\\?\C:\x\..2026\f.rego", r"C:\x\other\f.rego"),
+        (r"C:\x\..2026\f.rego", r"D:\x\..2026\f.rego"),
+    ],
+)
+def test_windows_canonical_form_keeps_different_files_apart(first, second):
+    assert _windows_canonical_form(first) != _windows_canonical_form(second)
+
+
+def _stat_unavailable(first, second):
+    raise OSError("stat identity unavailable (simulated)")
+
+
+def test_same_file_falls_back_to_canonical_paths_when_stat_fails(tmp_path, monkeypatch):
+    # Simulate the Windows failure mode where the stat leg cannot answer:
+    # identity must still be decided, by canonical resolved location.
+    target = tmp_path / "real.rego"
+    target.write_text("package acr\n")
+    direct = tmp_path / "alias.rego"
+    direct.symlink_to("real.rego")
+    other = tmp_path / "other.rego"
+    other.write_text("package acr\n")
+    monkeypatch.setattr(os.path, "samefile", _stat_unavailable)
+    assert _same_file(direct, target)
+    assert not _same_file(other, target)
+    assert not _same_file(tmp_path / "missing.rego", target)
+
+
+def test_projection_mapping_survives_stat_failure(tmp_path, monkeypatch):
+    # The exact projected layout of the configmap tests, with the stat leg
+    # sabotaged: the mapping must still verify via canonical paths, so the
+    # backing copy is deduplicated instead of reported unmapped.
+    root = tmp_path / "mount"
+    backing = root / "..2026"
+    backing.mkdir(parents=True)
+    (backing / "custom.rego").write_text('package acr\ndeny contains "custom" if { true }')
+    (root / "..data").symlink_to("..2026", target_is_directory=True)
+    (root / "custom.rego").symlink_to("..data/custom.rego")
+    monkeypatch.setattr(os.path, "samefile", _stat_unavailable)
+    assert list(extension_files(root)) == ["bundle/extensions/custom.rego"]

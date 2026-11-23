@@ -3,15 +3,19 @@
 # reviewed release image/digest. Does not delete DB/Redis or operator policies.
 set -eu
 # Git Bash/MSYS2 rewrites POSIX-looking arguments into Windows paths when a
-# shell launches a native executable such as docker.exe. Every argument this
-# script passes to Docker is a container path (/preflight, /operator-policies)
-# or an identifier that must arrive verbatim; the rewrite corrupts the volume
-# mount specs and makes the export preflight check below unreachable (its
-# /preflight argument never matches), so the upgrade would proceed past a
-# failed preflight instead of refusing. Opt out of the rewrite for everything
-# this script launches. These variables are inert outside MSYS2 shells.
-export MSYS_NO_PATHCONV=1
-export MSYS2_ARG_CONV_EXCL='*'
+# native executable is launched. The container paths this script passes to
+# Docker (/preflight, /operator-policies, and the /opa entrypoint) must
+# arrive verbatim: the rewrite turns /preflight into a Windows host path,
+# which makes the export preflight check below unreachable (its /preflight
+# argument never matches), so the upgrade would proceed past a failed
+# preflight instead of refusing. Exclude ONLY those container-path
+# arguments from the rewrite. A blanket exclusion (MSYS_NO_PATHCONV=1 or
+# MSYS2_ARG_CONV_EXCL='*') is worse than the bug: launching a script-based
+# docker (a shim with a shebang, as tests and some installs use) depends on
+# the rewrite to turn the shim's own POSIX path into a Windows path its
+# interpreter can open, so with conversion fully off the shim never runs
+# at all. These variables are inert outside MSYS2 shells.
+export MSYS2_ARG_CONV_EXCL='/preflight;/operator-policies;/opa'
 : "${ACR_GATEWAY_IMAGE:?Set the exact reviewed gateway image or digest}"
 : "${SERVICE_OPERATOR_API_KEY:?Set an existing auditor-authorized operator key}"
 : "${OPERATOR_API_KEYS_JSON:?Configure the same operator key with auditor privileges}"
