@@ -557,6 +557,7 @@ async def evaluate(
                 retained_input_data=retained_input_data,
             )
         except Exception as exc:
+
             await db.rollback()
             logger.error(
                 "Policy decision recording failed",
@@ -574,6 +575,27 @@ async def evaluate(
                     "error_code": "EVIDENCE_PERSISTENCE_FAILED",
                 },
             )
+
+        # ── [6b] Sentinel export enqueue (v1.5.0 WS4) ───────────────────────
+        # Strictly after the recording commit above, in its own guarded
+        # transaction: the export is a copy of the recorded evidence, never
+        # part of it. Any failure is logged and swallowed — it cannot
+        # delay (beyond one local insert), block, or alter the decision.
+        if settings.sentinel_enabled:
+            try:
+                from acr.integrations.events import enqueue_sentinel_decisions
+
+                await enqueue_sentinel_decisions(
+                    db, correlation_id=correlation_id, sequence=decision_sequence
+                )
+                await db.commit()
+            except Exception as exc:  # export must never touch enforcement
+                await db.rollback()
+                logger.warning(
+                    "sentinel_export_enqueue_failed",
+                    correlation_id=correlation_id,
+                    error=str(exc),
+                )
 
         # ── [7] Escalate → approval queue ─────────────────────────────────────
         # Enforce mode only: in observe mode a would-be escalation is

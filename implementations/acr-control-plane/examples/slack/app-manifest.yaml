@@ -1,0 +1,36 @@
+# ACR Control Plane — Slack app manifest (v1.5.0 WS4)
+#
+# Create the app from this manifest (https://api.slack.com/apps ->
+# "Create New App" -> "From a manifest"), then set on the control plane:
+#   SLACK_ENABLED=true
+#   SLACK_BOT_TOKEN=xoxb-...            (OAuth & Permissions -> Bot Token)
+#   SLACK_SIGNING_SECRET=...            (Basic Information -> Signing Secret)
+#   SLACK_APPROVALS_CHANNEL=C...        (channel id, not name)
+#   SLACK_ALERTS_CHANNEL=C...           (optional; defaults to approvals)
+#   SLACK_APPROVER_MAP_JSON={"U0123": "operator-subject"}
+# Replace acr.example.com below with the control plane's public base URL
+# BEFORE creating the app. Full guide: docs/integrations.md.
+display_information:
+  name: ACR Approvals
+  description: Runtime control approvals and containment alerts for AI agents.
+  background_color: "#1a1a2e"
+features:
+  bot_user:
+    display_name: ACR Approvals
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      # chat.postMessage / chat.update for approval + alert messages,
+      # chat.postEphemeral is not used; no read scopes are requested.
+      - chat:write
+settings:
+  interactivity:
+    is_enabled: true
+    # Slack signs every payload sent here (v0 scheme); the control plane
+    # verifies the signature and a 5-minute timestamp window before any
+    # state can change.
+    request_url: https://acr.example.com/acr/integrations/slack/actions
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

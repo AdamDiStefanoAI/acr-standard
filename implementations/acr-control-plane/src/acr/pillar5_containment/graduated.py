@@ -129,6 +129,21 @@ async def apply_graduated_response(
     db.add(record)
     await db.flush()
 
+    # Integration alerts (v1.5.0 WS4): enqueue containment alerts /
+    # ServiceNow incident via the async outbox. Savepoint-guarded inside
+    # enqueue_event — alerting can never affect the containment action.
+    from acr.integrations.events import notify_containment
+
+    await notify_containment(
+        db,
+        reference=str(record.id),
+        agent_id=agent_id,
+        action_type=action_type,
+        tier=tier.value,
+        reason=reason,
+        correlation_id=correlation_id,
+    )
+
     # Enforce: tiers 1–3 write Redis keys; tier 4 invokes the kill switch.
     if tier == ContainmentTier.KILL:
         await kill_agent(agent_id, reason=reason, operator_id="acr-drift-detector")

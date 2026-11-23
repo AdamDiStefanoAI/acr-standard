@@ -17,6 +17,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -221,6 +222,14 @@ class ApprovalRequestRecord(Base):
         String(16), nullable=True
     )  # approved | denied | overridden
     decided_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Chat-channel decisions (v1.5.0 WS4): when a decision arrives through
+    # an integration (Slack/Teams), decided_by still carries the mapped
+    # operator subject — the identity the approvals path authorized — and
+    # these two columns preserve the transport identity alongside it:
+    # decided_channel is "slack"/"teams", chat_actor_id is the chat user
+    # id that was mapped to decided_by. Both stay NULL for API decisions.
+    decided_channel: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    chat_actor_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     sla_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=240)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -553,4 +562,87 @@ class PolicyReleaseRecord(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+# ── Integration outbox (v1.5.0 WS4) ───────────────────────────────────────────
+
+
+class IntegrationOutboxRecord(Base):
+    """Durable outbound-integration queue: one row per event per integration.
+
+    Rows are written by the approval/containment/decision paths (in a
+    savepoint, so an enqueue failure can never break the path that produced
+    the event) and drained asynchronously by the outbox worker loop. The
+    evaluate hot path never delivers from here; it only ever enqueues.
+    Payloads never contain secrets — credentials live in deployment config.
+    """
+
+    __tablename__ = "integration_outbox"
+    __table_args__ = (
+        CheckConstraint(
+            "integration IN ('slack', 'teams', 'servicenow', 'sentinel')",
+            name="ck_integration_outbox_integration",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'delivering', 'delivered', 'dead_letter')",
+            name="ck_integration_outbox_status",
+        ),
+        UniqueConstraint(
+            "integration", "event_type", "reference", name="uq_integration_outbox_event"
+        ),
+        Index("ix_integration_outbox_due", "status", "next_attempt_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False, default=lambda: f"evt-{uuid.uuid4()}"
+    )
+    integration: Mapped[str] = mapped_column(String(16), nullable=False)
+    # approval_requested | approval_decided | containment_action |
+    # killswitch_activated | decision_export
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Dedupe/lookup key: approval request_id, containment record id,
+    # kill event id, or policy decision record id, depending on event_type.
+    reference: Mapped[str] = mapped_column(String(128), nullable=False)
+    correlation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # Non-secret destination descriptor (channel id, webhook host, table).
+    target: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Provider-side reference captured on successful delivery, e.g.
+    # {"channel": "C1", "ts": "1700.1"} for Slack, {"sys_id": ..., "number":
+    # ...} for ServiceNow. Later events (approval message updates) read the
+    # original event's delivery_ref to find the message they must update.
+    delivery_ref: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class IntegrationDeliveryAttemptRecord(Base):
+    """One row per delivery attempt — delivery itself is evidence."""
+
+    __tablename__ = "integration_delivery_attempts"
+    __table_args__ = (Index("ix_integration_attempts_outbox", "outbox_id", "attempt_number"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    outbox_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("integration_outbox.id", ondelete="CASCADE"), nullable=False
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    result: Mapped[str] = mapped_column(String(16), nullable=False)  # success | failure
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

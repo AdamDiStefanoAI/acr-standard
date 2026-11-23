@@ -42,6 +42,10 @@ class ApprovalResponse(BaseModel):
     status: ApprovalStatus
     decision: str | None
     decided_by: str | None
+    # WS4: transport identity for chat-channel decisions (both None for
+    # decisions made through this API directly).
+    decided_channel: str | None = None
+    chat_actor_id: str | None = None
     decision_reason: str | None
     sla_minutes: int
     expires_at: datetime | None

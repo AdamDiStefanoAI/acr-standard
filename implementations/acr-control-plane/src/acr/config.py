@@ -116,6 +116,56 @@ class Settings(BaseSettings):
     # exact bundle activation would distribute. Inert when retention is off.
     policy_simulation_gate_enabled: bool = True
 
+    # ── Integrations (v1.5.0 WS4) ─────────────────────────────────────────────
+    # Every integration is OFF by default; with all of them off, behavior is
+    # byte-identical to pre-WS4 (no outbox rows are written, no outbound
+    # calls are made). Outbound delivery is asynchronous via a durable
+    # outbox (migration 0020) drained by a lifespan worker loop: nothing in
+    # this section is ever consulted on the evaluate hot path beyond an
+    # enabled-check, and a delivery failure can never alter a decision.
+    # Secrets (bot tokens, signing secrets, passwords) come only from the
+    # deployment environment, are never logged, and never enter payloads.
+    integrations_outbox_poll_seconds: int = 5
+    integrations_outbox_max_attempts: int = 5
+    integrations_outbox_backoff_base_seconds: int = 30
+    # Slack approvals + alerts. Approver identity mapping is explicit:
+    # JSON object {"U0123ABC": "operator-subject"}; an unmapped Slack user
+    # cannot approve anything.
+    slack_enabled: bool = False
+    slack_bot_token: str = ""
+    slack_signing_secret: str = ""
+    slack_approvals_channel: str = ""
+    slack_alerts_channel: str = ""
+    slack_approver_map_json: str = ""
+    # Microsoft Teams approvals + alerts. UNVERIFIED: built to Microsoft's
+    # published incoming-webhook / Adaptive Card / outgoing-webhook formats
+    # and contract-tested against mocks; no live tenant verification.
+    teams_enabled: bool = False
+    teams_webhook_url: str = ""
+    # Base64-encoded outgoing-webhook security key (HMAC scheme), also used
+    # to sign per-action tokens carried by Adaptive Card Action.Http posts.
+    teams_callback_secret: str = ""
+    # Public base URL of this control plane, used to build the Adaptive
+    # Card action callback URL (e.g. "https://acr.example.com").
+    teams_callback_base_url: str = ""
+    teams_approver_map_json: str = ""
+    # ServiceNow incident creation. UNVERIFIED (mock contract tests only).
+    servicenow_enabled: bool = False
+    servicenow_instance_url: str = ""
+    servicenow_username: str = ""
+    servicenow_password: str = ""
+    servicenow_incident_on_deny: bool = False
+    # Microsoft Sentinel decision export via the Azure Monitor Logs
+    # Ingestion API (DCR-based). UNVERIFIED (mock contract tests only).
+    sentinel_enabled: bool = False
+    sentinel_dce_endpoint: str = ""
+    sentinel_dcr_immutable_id: str = ""
+    sentinel_stream_name: str = "Custom-ACRDecisions_CL"
+    sentinel_tenant_id: str = ""
+    sentinel_client_id: str = ""
+    sentinel_client_secret: str = ""
+    sentinel_batch_max: int = 100
+
     # ── Auditor grants (v1.5.0 WS3) ───────────────────────────────────────────
     # Auditor access is issued as a time-boxed, read-only grant, never as a
     # standing credential. The cap is configurable per deployment; 30 days
@@ -323,6 +373,45 @@ def evaluation_input_redaction_fields() -> list[str]:
     if not isinstance(raw, list):
         raise RuntimeError("EVALUATION_INPUT_REDACTION_FIELDS_JSON must decode to an array")
     return [str(item) for item in raw]
+
+
+@lru_cache(maxsize=1)
+def slack_approver_map() -> dict[str, str]:
+    """Slack user id -> operator subject. Empty unless explicitly configured."""
+    if not settings.slack_approver_map_json:
+        return {}
+    try:
+        raw = json.loads(settings.slack_approver_map_json)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("SLACK_APPROVER_MAP_JSON is not valid JSON") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError("SLACK_APPROVER_MAP_JSON must decode to an object")
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+@lru_cache(maxsize=1)
+def teams_approver_map() -> dict[str, str]:
+    """Teams user id -> operator subject. Empty unless explicitly configured."""
+    if not settings.teams_approver_map_json:
+        return {}
+    try:
+        raw = json.loads(settings.teams_approver_map_json)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("TEAMS_APPROVER_MAP_JSON is not valid JSON") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError("TEAMS_APPROVER_MAP_JSON must decode to an object")
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def any_integration_enabled() -> bool:
+    return any(
+        (
+            settings.slack_enabled,
+            settings.teams_enabled,
+            settings.servicenow_enabled,
+            settings.sentinel_enabled,
+        )
+    )
 
 
 @lru_cache(maxsize=1)
