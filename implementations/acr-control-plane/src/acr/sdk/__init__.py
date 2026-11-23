@@ -16,6 +16,7 @@ from acr.sdk.errors import (
     ACRSDKError,
 )
 from acr.sdk.langgraph import build_langchain_tool, guard_async_tool, guard_tool
+from acr.sdk.openai_agents import guard_openai_tool, guard_openai_tools
 
 __all__ = [
     "ACRAgentSession",
@@ -35,5 +36,7 @@ __all__ = [
     "guard_async_tool",
     "guard_crewai_tool",
     "guard_crewai_tools",
+    "guard_openai_tool",
+    "guard_openai_tools",
     "guard_tool",
 ]
