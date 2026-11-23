@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from acr.common.operator_auth import OperatorPrincipal, require_operator_roles
 from acr.common.redis_client import get_redis_or_none
+from acr.common.time import utcnow
 from acr.config import runtime_dependencies_fail_closed
 from acr.db.database import get_db
 from acr.pillar1_identity import registry
@@ -17,12 +20,14 @@ from acr.pillar1_identity.models import (
     AgentRegisterRequest,
     AgentResponse,
     AgentUpdateRequest,
+    EnforcementModeTransitionRequest,
     HeartbeatRequest,
     LifecycleState,
     LifecycleTransitionRequest,
     TokenResponse,
 )
 from acr.pillar1_identity.validator import issue_token, validate_agent_identity
+from acr.pillar4_observability.observe import ObserveReport, build_observe_report
 
 logger = structlog.get_logger(__name__)
 
@@ -205,6 +210,76 @@ async def transition_lifecycle(
         reason=req.reason,
     )
     return AgentResponse.model_validate(record)
+
+
+# ── Enforcement mode ──────────────────────────────────────────────────────────
+
+
+@router.post("/{agent_id}/enforcement-mode", response_model=AgentResponse)
+async def transition_enforcement_mode(
+    agent_id: str,
+    req: EnforcementModeTransitionRequest,
+    db: AsyncSession = Depends(get_db),
+    principal: OperatorPrincipal = Depends(require_operator_roles("agent_admin", "security_admin")),
+) -> AgentResponse:
+    """Move an agent between `enforce` and `observe` enforcement modes.
+
+    This is the only post-registration write path for enforcement mode.
+    The transition is an operator action and is written to the audit trail
+    (actor, from/to, operator-supplied reason) exactly like lifecycle
+    transitions. Mode flips do not alter pillar 6 state: approvals already
+    queued keep the semantics they were issued under.
+    """
+    record = await registry.get_agent(db, agent_id)
+    from_mode = record.enforcement_mode
+    record = await registry.transition_enforcement_mode(db, agent_id, req.target_mode)
+    logger.info(
+        "agent_enforcement_mode_transition",
+        agent_id=agent_id,
+        from_mode=from_mode,
+        target_mode=req.target_mode,
+        actor=principal.subject,
+        reason=req.reason,
+    )
+    return AgentResponse.model_validate(record)
+
+
+@router.get("/{agent_id}/observe-report", response_model=ObserveReport)
+async def get_observe_report(
+    agent_id: str,
+    window_start: datetime | None = Query(
+        default=None,
+        description="Window start (ISO 8601). Default: 30 days before window_end.",
+    ),
+    window_end: datetime | None = Query(
+        default=None,
+        description="Window end (ISO 8601). Default: now.",
+    ),
+    db: AsyncSession = Depends(get_db),
+    principal: OperatorPrincipal = Depends(
+        require_operator_roles("agent_admin", "auditor", "security_admin")
+    ),
+) -> ObserveReport:
+    """Aggregate the agent's observe-mode (would-be) decisions over a window.
+
+    Read-only. Counts only decisions recorded while the agent was in
+    observe mode; enforce-mode decisions are never mixed in.
+    """
+    record = await registry.get_agent(db, agent_id)
+    end = window_end or utcnow()
+    start = window_start or (end - timedelta(days=30))
+    if start > end:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="window_start must be at or before window_end",
+        )
+    return await build_observe_report(
+        db,
+        agent_id=agent_id,
+        current_mode=record.enforcement_mode,
+        window_start=start,
+        window_end=end,
+    )
 
 
 # ── Heartbeat ─────────────────────────────────────────────────────────────────

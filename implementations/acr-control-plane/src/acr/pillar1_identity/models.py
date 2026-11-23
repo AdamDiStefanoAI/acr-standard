@@ -18,6 +18,14 @@ LifecycleState = Literal["draft", "active", "deprecated", "retired"]
 # heartbeat arrives. The sweep loop downgrades stale agents to `unhealthy`.
 HealthStatus = Literal["unknown", "healthy", "degraded", "unhealthy"]
 
+# Enforcement mode (v1.5.0 WS1): `enforce` applies policy decisions to the
+# call. `observe` runs the identical evaluation and records the would-be
+# decision with the same synchronous §18 evidence semantics, but lets the
+# call proceed. Mode is operator-controlled: it is set at registration or
+# via the dedicated transition endpoint, and can never be influenced by
+# the agent or by anything in an evaluate request.
+EnforcementMode = Literal["enforce", "observe"]
+
 
 class DataAccessEntry(BaseModel):
     resource: str
@@ -73,6 +81,7 @@ class AgentManifest(BaseModel):
     version: str = "1.0.0"
     parent_agent_id: str | None = None
     capabilities: list[str] = Field(default_factory=list)
+    enforcement_mode: EnforcementMode = "enforce"
 
 
 class AgentRegisterRequest(BaseModel):
@@ -91,6 +100,9 @@ class AgentRegisterRequest(BaseModel):
     # Operators can register an agent in `draft` and promote it later, or
     # register directly as `active` (the historical default).
     lifecycle_state: LifecycleState = "active"
+    # Pilots typically register directly in `observe` and promote to
+    # `enforce` via the transition endpoint once the observe report is read.
+    enforcement_mode: EnforcementMode = "enforce"
 
 
 class AgentUpdateRequest(BaseModel):
@@ -103,15 +115,25 @@ class AgentUpdateRequest(BaseModel):
     boundaries: AgentBoundaries | None = None
     version: str | None = None
     capabilities: list[str] | None = None
-    # NOTE: parent_agent_id and lifecycle_state are intentionally NOT mutable
-    # via this generic update endpoint — they have dedicated transition
-    # endpoints with their own validation.
+    # NOTE: parent_agent_id, lifecycle_state and enforcement_mode are
+    # intentionally NOT mutable via this generic update endpoint — they
+    # have dedicated transition endpoints with their own validation.
 
 
 class LifecycleTransitionRequest(BaseModel):
     """Request to move an agent into a new lifecycle state."""
 
     target_state: LifecycleState
+    reason: str | None = Field(
+        default=None,
+        description="Operator-supplied justification (recorded in audit telemetry)",
+    )
+
+
+class EnforcementModeTransitionRequest(BaseModel):
+    """Request to move an agent between `enforce` and `observe` mode."""
+
+    target_mode: EnforcementMode
     reason: str | None = Field(
         default=None,
         description="Operator-supplied justification (recorded in audit telemetry)",
@@ -139,6 +161,10 @@ class AgentResponse(BaseModel):
     parent_agent_id: str | None
     capabilities: list[str]
     lifecycle_state: LifecycleState
+    # Defaulted so SDK consumers parsing responses from older servers keep
+    # working (same pattern as the registry expansion fields on the
+    # manifest). Servers at this version always populate it from the record.
+    enforcement_mode: EnforcementMode = "enforce"
     health_status: HealthStatus
     last_heartbeat_at: datetime | None
     created_at: datetime

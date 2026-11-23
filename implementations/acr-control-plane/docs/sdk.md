@@ -156,6 +156,16 @@ It mirrors the same concepts:
 - `evaluateAction(...)`
 - typed decision and error objects
 
+## Piloting a Guarded Agent in Observe Mode
+
+Whichever adapter you use, the agent behind it can be registered in
+`observe` enforcement mode: evaluations run and are recorded exactly as
+in enforce mode, the call proceeds, and the response carries
+`enforcement_mode: "observe"` with the `would_be_decision` for your
+logs. It is the recommended way to pilot ACR against real traffic
+before enforcing. See [Piloting with Observe Mode](piloting-observe-mode.md)
+for the 30-day pilot playbook and the observe report.
+
 ## Why This Matters
 
 The goal is not to make ACR optional glue code.

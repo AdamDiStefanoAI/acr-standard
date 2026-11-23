@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Observe mode (v1.5.0 WS1, the pilot release): per-agent enforcement mode (`enforce` default, `observe`), set at registration or through a dedicated operator-only transition endpoint (`POST /acr/agents/{id}/enforcement-mode`, audited with actor and reason; the generic update endpoint deliberately cannot change it). In observe mode the full policy evaluation runs unchanged and the decision is recorded synchronously with its §18 sequence and a mode stamp (migration 0016: `agents.enforcement_mode`, `policy_decisions.enforcement_mode`); recording failure still fails secure with 503. The call then proceeds: the evaluate response is HTTP 200 with `decision: "allow"`, `enforcement_mode: "observe"`, `would_be_decision`, and `enforced: false`; no approval request is created for a would-be escalation and no policy modification is substituted. Kill switch and graduated containment are exempt from observe and apply exactly as in enforce mode; mode comes only from the stored agent record, never from the request. New observe report (`GET /acr/agents/{id}/observe-report`) aggregates would-be decisions per agent over a window (counts by outcome, top blocked tools, sample decision references). Telemetry output objects carry `enforcement_mode`. Red-team harness gains category 2 (mode confusion). Guide: `docs/piloting-observe-mode.md`.
+
 ## [1.4.1] - 2026-11-22
 
 ### Fixed

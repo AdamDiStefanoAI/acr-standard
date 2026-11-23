@@ -25,6 +25,7 @@ from acr.pillar1_identity.models import (
     AgentManifest,
     AgentRegisterRequest,
     AgentUpdateRequest,
+    EnforcementMode,
     HealthStatus,
     LifecycleState,
 )
@@ -57,6 +58,7 @@ def _record_to_manifest(record: AgentRecord) -> AgentManifest:
         version=record.version,
         parent_agent_id=record.parent_agent_id,
         capabilities=record.capabilities or [],
+        enforcement_mode=record.enforcement_mode,
     )
 
 
@@ -86,6 +88,7 @@ async def register_agent(db: AsyncSession, req: AgentRegisterRequest) -> AgentRe
         parent_agent_id=req.parent_agent_id,
         capabilities=req.capabilities,
         lifecycle_state=req.lifecycle_state,
+        enforcement_mode=req.enforcement_mode,
         # Keep legacy is_active in sync with lifecycle_state. Existing
         # consumers (validator, metrics, gateway) still read is_active.
         is_active=(req.lifecycle_state != "retired"),
@@ -173,6 +176,36 @@ async def transition_lifecycle(
         )
     record.lifecycle_state = target_state
     record.is_active = target_state != "retired"
+    record.updated_at = utcnow()
+    await db.flush()
+    await db.refresh(record)
+    return record
+
+
+async def transition_enforcement_mode(
+    db: AsyncSession,
+    agent_id: str,
+    target_mode: EnforcementMode,
+) -> AgentRecord:
+    """Move an agent between `enforce` and `observe` enforcement modes.
+
+    This is the ONLY write path for enforcement mode after registration:
+    the generic update endpoint deliberately does not carry the field, and
+    the gateway reads mode exclusively from the stored record. Both
+    directions are allowed (pilots promote observe → enforce and may step
+    back). Retired agents are terminal, consistent with lifecycle rules —
+    their mode can no longer change.
+
+    Mode flips do not reach into pillar 6: approval requests already in
+    the queue keep the lifecycle, expiry and claim-once receipt semantics
+    they were issued under, in both directions.
+    """
+    record = await get_agent(db, agent_id)
+    if record.enforcement_mode == target_mode:
+        return record
+    if record.lifecycle_state == "retired":
+        raise AgentLifecycleError(f"Cannot change enforcement mode of retired agent '{agent_id}'")
+    record.enforcement_mode = target_mode
     record.updated_at = utcnow()
     await db.flush()
     await db.refresh(record)

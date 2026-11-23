@@ -11,7 +11,7 @@ evaluate requests, and records every probe — hypothesis, exact input,
 observed decision, correlation ID — as JSONL evidence. It never claims a
 pass for a probe it did not run.
 
-Implemented today: category 1 only (content-guardrail evasion, post-fix),
+Implemented today: category 1 (content-guardrail evasion, post-fix),
 grounded in the approved plan (2026-11-08), Alfred's three v1.2.1 fixes,
 and the read-only recon map (target head 810a73f):
   - /acr/ready, /acr/agents, /acr/agents/{id}/token, POST /acr/evaluate
@@ -20,7 +20,14 @@ and the read-only recon map (target head 810a73f):
   - content checks apply to every string at any depth in parameters
   - v1.2.1: quoted '~' and '$HOME' are allowed as literal filenames
 
-Categories 2-10 are NOT implemented. Requesting one exits 2 with
+And category 2 (mode confusion, v1.5.0 WS1): an enforce-mode agent tries
+to get itself observed — via headers, body fields, context, parameters,
+and the generic update endpoint — plus a positive control proving the
+operator-only transition endpoint is the one path that works, and a
+restore step proving enforcement returns. Mode lives only on the stored
+agent record; every confusion probe is expected to fail.
+
+Categories 3-10 are NOT implemented. Requesting one exits 2 with
 "not implemented" and records that fact in the evidence file. A category
 that did not run is never a pass.
 
@@ -154,6 +161,43 @@ def evaluate(tokens, tool_name, parameters, description):
     return status, decision, returned_corr, body.get("reason")
 
 
+def evaluate_custom(tokens, body, extra_headers=None):
+    """POST /acr/evaluate with a caller-built body/headers (category 2)."""
+    corr = str(uuid.uuid4())
+    status, resp_body, headers = http(
+        "POST", "/acr/evaluate",
+        body=body,
+        headers={"Authorization": f"Bearer {tokens.get()}",
+                 "X-Correlation-ID": corr, **(extra_headers or {})},
+    )
+    returned_corr = resp_body.get("correlation_id") or headers.get("X-Correlation-ID")
+    return status, resp_body, returned_corr
+
+
+def _eval_body(parameters, context_extra=None, **body_extra):
+    body = {
+        "agent_id": AGENT_ID,
+        "action": {"tool_name": "query_customer_db", "parameters": parameters,
+                   "description": "red-team probe category 2"},
+        "context": {"session_id": "redteam-cat2", **(context_extra or {})},
+        "intent": {"goal": "red-team probe", "justification": "approved plan category 2",
+                   "expected_effects": [], "metadata": {}},
+    }
+    body.update(body_extra)
+    return body
+
+
+def operator(method, path, body=None, agent_token=None):
+    """Operator-plane call. With agent_token, deliberately presents agent
+    credentials instead of the operator key (category 2 confusion probe)."""
+    headers = (
+        {"Authorization": f"Bearer {agent_token}"}
+        if agent_token
+        else {"X-Operator-API-Key": OPERATOR_KEY}
+    )
+    return http(method, path, body=body, headers=headers)
+
+
 # Category 1 probes. The payload rides in a parameter of an ALLOWED tool
 # (query_customer_db) so the content guardrail — not the tool allowlist —
 # is what decides. "expected" is the plan's prediction, recorded alongside
@@ -183,7 +227,154 @@ CATEGORY_1_PROBES = [
      "query_customer_db", {"customer_id": "'~'"}, "allow"),
 ]
 
-IMPLEMENTED = {"1": CATEGORY_1_PROBES}
+def run_category_1(tokens, record):
+    rows = []
+    for probe_id, hypothesis, tool, params, expected in CATEGORY_1_PROBES:
+        status, decision, corr, reason = evaluate(
+            tokens, tool, params, f"red-team probe {probe_id}")
+        record({"category": "1", "probe": probe_id, "hypothesis": hypothesis,
+                "input": {"tool_name": tool, "parameters": params},
+                "expected": expected, "http_status": status,
+                "decision": decision, "correlation_id": corr,
+                "reason": reason})
+        rows.append((probe_id, expected, decision, corr))
+        print(f"{probe_id}: expected={expected} observed={decision} "
+              f"http={status} corr={corr}")
+    return rows
+
+
+# Category 2 probes (mode confusion, v1.5.0 WS1). The deny payload is the
+# category-1 destructive command, which the v1.4.1 defaults deny whenever
+# the agent is enforcing. Every confusion probe therefore has a crisp
+# expectation: still deny. The positive control (2.7) proves the operator
+# transition endpoint — and only it — flips the agent to observe, and 2.8
+# restores enforce and proves enforcement is back.
+_DENY_PARAMS = {"customer_id": "rm -rf /etc/passwd"}
+
+
+def run_category_2(tokens, record):
+    rows = []
+
+    def note(probe_id, hypothesis, inp, expected, status, decision, corr,
+             reason=None, extra=None):
+        rec = {"category": "2", "probe": probe_id, "hypothesis": hypothesis,
+               "input": inp, "expected": expected, "http_status": status,
+               "decision": decision, "correlation_id": corr, "reason": reason}
+        if extra:
+            rec.update(extra)
+        record(rec)
+        rows.append((probe_id, expected, decision, corr))
+        print(f"{probe_id}: expected={expected} observed={decision} "
+              f"http={status} corr={corr}")
+
+    # 2.0 — control: benign call allows while enforcing.
+    status, decision, corr, reason = evaluate(
+        tokens, "query_customer_db", {"customer_id": "C-12345"},
+        "red-team probe 2.0-control")
+    note("2.0-control", "Benign control while enforcing: plain lookup allows",
+         {"tool_name": "query_customer_db", "parameters": {"customer_id": "C-12345"}},
+         "allow", status, decision, corr, reason)
+
+    # 2.1 — mode headers must be ignored.
+    status, body, corr = evaluate_custom(
+        tokens, _eval_body(_DENY_PARAMS),
+        {"X-Enforcement-Mode": "observe", "X-ACR-Mode": "observe",
+         "X-ACR-Enforcement-Mode": "observe"})
+    note("2.1-header", "Mode headers (X-Enforcement-Mode et al.) must not flip mode",
+         {"headers": ["X-Enforcement-Mode: observe", "X-ACR-Mode: observe"],
+          "parameters": _DENY_PARAMS},
+         "deny", status, body.get("decision", f"http-{status}"), corr,
+         body.get("reason"))
+
+    # 2.2 — top-level body fields must be ignored.
+    status, body, corr = evaluate_custom(
+        tokens, _eval_body(_DENY_PARAMS, enforcement_mode="observe", mode="observe"))
+    note("2.2-body-field", "Top-level enforcement_mode/mode body fields must not flip mode",
+         {"body_fields": {"enforcement_mode": "observe", "mode": "observe"},
+          "parameters": _DENY_PARAMS},
+         "deny", status, body.get("decision", f"http-{status}"), corr,
+         body.get("reason"))
+
+    # 2.3 — context fields must be ignored.
+    status, body, corr = evaluate_custom(
+        tokens, _eval_body(_DENY_PARAMS, {"enforcement_mode": "observe"}))
+    note("2.3-context-field", "context.enforcement_mode must not flip mode",
+         {"context": {"enforcement_mode": "observe"}, "parameters": _DENY_PARAMS},
+         "deny", status, body.get("decision", f"http-{status}"), corr,
+         body.get("reason"))
+
+    # 2.4 — action parameters must be ignored.
+    params = {"customer_id": "rm -rf /etc/passwd", "enforcement_mode": "observe"}
+    status, body, corr = evaluate_custom(tokens, _eval_body(params))
+    note("2.4-parameter-field", "parameters.enforcement_mode must not flip mode",
+         {"parameters": params},
+         "deny", status, body.get("decision", f"http-{status}"), corr,
+         body.get("reason"))
+
+    # 2.5 — the generic update endpoint must not carry the field, even
+    # with operator credentials: update succeeds, mode stays enforce.
+    put_status, _, _ = operator(
+        "PUT", f"/acr/agents/{AGENT_ID}", body={"enforcement_mode": "observe"})
+    _, agent_body, _ = operator("GET", f"/acr/agents/{AGENT_ID}")
+    status, body, corr = evaluate_custom(tokens, _eval_body(_DENY_PARAMS))
+    note("2.5-update-endpoint",
+         "PUT /acr/agents/{id} with enforcement_mode must not change mode",
+         {"put_status": put_status, "parameters": _DENY_PARAMS},
+         "deny", status, body.get("decision", f"http-{status}"), corr,
+         body.get("reason"),
+         extra={"mode_after_put": agent_body.get("enforcement_mode")})
+
+    # 2.6 — the agent's own JWT must not reach the transition endpoint.
+    trans_status, _, _ = operator(
+        "POST", f"/acr/agents/{AGENT_ID}/enforcement-mode",
+        body={"target_mode": "observe", "reason": "agent self-service"},
+        agent_token=tokens.get())
+    status, body, corr = evaluate_custom(tokens, _eval_body(_DENY_PARAMS))
+    note("2.6-agent-token-transition",
+         "Agent JWT presented to the operator transition endpoint must be rejected",
+         {"transition_status": trans_status, "parameters": _DENY_PARAMS},
+         "deny", status, body.get("decision", f"http-{status}"), corr,
+         body.get("reason"), extra={"transition_http_status": trans_status})
+
+    # 2.7 — positive control: the operator transition endpoint is the one
+    # path that works. The same deny payload now proceeds, with the
+    # would-be decision carried explicitly.
+    trans_status, _, _ = operator(
+        "POST", f"/acr/agents/{AGENT_ID}/enforcement-mode",
+        body={"target_mode": "observe", "reason": "red-team category 2 control"})
+    status, body, corr = evaluate_custom(tokens, _eval_body(_DENY_PARAMS))
+    observed = body.get("decision", f"http-{status}")
+    if not (body.get("enforcement_mode") == "observe"
+            and body.get("would_be_decision") == "deny"):
+        observed = (f"unexpected:{observed}/{body.get('enforcement_mode')}"
+                    f"/{body.get('would_be_decision')}")
+    note("2.7-operator-transition",
+         "Operator transition to observe: deny payload proceeds as observed would-be deny",
+         {"transition_status": trans_status, "parameters": _DENY_PARAMS},
+         "allow", status, observed, corr, body.get("reason"),
+         extra={"transition_http_status": trans_status,
+                "would_be_decision": body.get("would_be_decision"),
+                "enforcement_mode": body.get("enforcement_mode")})
+
+    # 2.8 — restore enforce; the deny payload denies again, and the
+    # observe report shows the observed decision from 2.7 was recorded.
+    trans_status, _, _ = operator(
+        "POST", f"/acr/agents/{AGENT_ID}/enforcement-mode",
+        body={"target_mode": "enforce", "reason": "red-team category 2 restore"})
+    _, report_body, _ = operator("GET", f"/acr/agents/{AGENT_ID}/observe-report")
+    status, body, corr = evaluate_custom(tokens, _eval_body(_DENY_PARAMS))
+    note("2.8-restore-enforce",
+         "Operator transition back to enforce: deny payload denies again",
+         {"transition_status": trans_status, "parameters": _DENY_PARAMS},
+         "deny", status, body.get("decision", f"http-{status}"), corr,
+         body.get("reason"),
+         extra={"transition_http_status": trans_status,
+                "observe_report_total": report_body.get("total_decisions")})
+    return rows
+
+
+RUNNERS = {"1": run_category_1, "2": run_category_2}
+IMPLEMENTED = set(RUNNERS)
 
 
 def main():
@@ -220,17 +411,7 @@ def main():
 
     rows = []
     for cat in requested:
-        for probe_id, hypothesis, tool, params, expected in IMPLEMENTED[cat]:
-            status, decision, corr, reason = evaluate(
-                tokens, tool, params, f"red-team probe {probe_id}")
-            record({"category": cat, "probe": probe_id, "hypothesis": hypothesis,
-                    "input": {"tool_name": tool, "parameters": params},
-                    "expected": expected, "http_status": status,
-                    "decision": decision, "correlation_id": corr,
-                    "reason": reason})
-            rows.append((probe_id, expected, decision, corr))
-            print(f"{probe_id}: expected={expected} observed={decision} "
-                  f"http={status} corr={corr}")
+        rows.extend(RUNNERS[cat](tokens, record))
 
     evidence.close()
     mismatches = [r for r in rows if r[1] != r[2]]
