@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from acr.common.time import utcnow
 from acr.db.models import DriftMetricRecord
-from acr.pillar3_drift.baseline import get_or_create_baseline, recompute_baseline
+from acr.pillar3_drift.baseline import recompute_baseline
 from acr.pillar3_drift.governance import get_active_baseline_version
 from acr.pillar3_drift.models import DriftScore
 from acr.pillar3_drift.signals import (
@@ -102,7 +102,17 @@ async def compute_drift_score(db: AsyncSession, agent_id: str) -> DriftScore:
                 baseline_status=baseline_status,
             )
     else:
-        baseline_record = await get_or_create_baseline(db, agent_id)
+        # Recompute FIRST: the stored sample_count is only ever set by
+        # recompute_baseline, so gating on it before recomputing deadlocks
+        # every fresh agent at sample_count=0 — samples land in
+        # drift_metrics but the baseline record never reflects them and
+        # is_baseline_ready can never become true. (The governance propose
+        # path recomputes, but nothing in the evaluate/background flow
+        # ever reaches it for a new agent.) This is the same recompute
+        # the ready path already performs on every call below; with no
+        # samples recorded it returns the empty baseline record and the
+        # not-ready result is unchanged.
+        baseline_record = await recompute_baseline(db, agent_id)
 
         if baseline_record.sample_count < MIN_BASELINE_SAMPLES:
             # Not enough baseline data yet
@@ -116,8 +126,6 @@ async def compute_drift_score(db: AsyncSession, agent_id: str) -> DriftScore:
                 baseline_status=None,
             )
 
-        # Recompute baseline periodically (every call for now; optimize with TTL in production)
-        baseline_record = await recompute_baseline(db, agent_id)
         baseline_data = baseline_record.baseline_data
         sample_count = baseline_record.sample_count
 
