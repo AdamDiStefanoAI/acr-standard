@@ -284,23 +284,26 @@ jobs:
       - name: Pull disposable images
         timeout-minutes: 5
         run: docker compose pull postgres redis opa
-      - name: Build and start the disposable stack with the MCP gateway
+      - name: Build and start the disposable stack (phase 1, everything except the MCP gateway)
         timeout-minutes: 12
-        run: docker compose up --build -d --wait --wait-timeout 300
-      - name: Wait for the control plane, gateway, and fixture
-        timeout-minutes: 3
         run: |
-          for i in $(seq 1 24); do
-            if curl -fsS http://127.0.0.1:8000/acr/ready > /dev/null \
-              && curl -fsS http://127.0.0.1:8080/health > /dev/null \
-              && curl -fsS http://127.0.0.1:9000/health > /dev/null; then
-              echo "control plane, MCP gateway, and fixture are up"
-              exit 0
-            fi
-            sleep 5
-          done
-          echo '::error::control plane, MCP gateway, or fixture never became ready; category 11 cannot run.'
-          exit 1
+          # The MCP gateway issues its own agent session during its
+          # lifespan startup (acr.mcp_gateway.service._build_proxy ->
+          # issue_agent_session), so it cannot boot until the
+          # acr-mcp-gateway agent is registered — and registration
+          # needs a healthy control plane. Boot in phases: the full
+          # stack minus acr-mcp-gateway first (this list is every
+          # service in the merged base + full-stack-test +
+          # mcp-gateway-test layering except acr-mcp-gateway; nothing
+          # in the stack depends on acr-mcp-gateway, so excluding it
+          # changes nothing else), then register the agent (next
+          # step), then start the gateway (phase 3, below). The
+          # one-shot services (acr-policy-export, acr-migrate) are
+          # listed explicitly; --wait treats their successful exit as
+          # complete, as it did when the whole stack booted at once.
+          docker compose up --build -d --wait --wait-timeout 300 \
+            postgres redis opa acr-policy-export acr-migrate \
+            acr-gateway acr-killswitch protected-executor mcp-fixture
       - name: Register the MCP gateway agent
         run: |
           # The gateway evaluates every tools/call as its own agent
@@ -322,6 +325,33 @@ jobs:
             exit 1
           fi
           echo "MCP gateway agent registered (HTTP $code)"
+      - name: Start the MCP gateway (phase 3, after agent registration)
+        timeout-minutes: 12
+        run: |
+          # The gateway's agent now exists, so its lifespan startup
+          # can issue its session. --build is explicit because phase 1
+          # did not build this service's image (it was not in that
+          # step's service list). The already-running dependencies
+          # (acr-gateway healthy, mcp-fixture started) are unchanged,
+          # so compose starts only acr-mcp-gateway; --wait blocks on
+          # its healthcheck (curl -f http://localhost:8080/health,
+          # which uvicorn cannot answer until the lifespan has
+          # completed, so a healthy result means the proxy is built).
+          docker compose up --build -d --wait --wait-timeout 300 acr-mcp-gateway
+      - name: Wait for the control plane, gateway, and fixture
+        timeout-minutes: 3
+        run: |
+          for i in $(seq 1 24); do
+            if curl -fsS http://127.0.0.1:8000/acr/ready > /dev/null \
+              && curl -fsS http://127.0.0.1:8080/health > /dev/null \
+              && curl -fsS http://127.0.0.1:9000/health > /dev/null; then
+              echo "control plane, MCP gateway, and fixture are up"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo '::error::control plane, MCP gateway, or fixture never became ready; category 11 cannot run.'
+          exit 1
       - name: Run the red-team harness (category 11, MCP gateway)
         timeout-minutes: 20
         run: |
