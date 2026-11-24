@@ -262,6 +262,18 @@ jobs:
           services:
             mcp-fixture:
               ports: !override ["127.0.0.1:9000:9000"]
+          # Category 11 tests the pure-proxy deployment: the control
+          # plane must not execute allowed actions itself, or the
+          # proxy returns the execution result without forwarding
+          # and the fixture's execution log (the probes' ground
+          # truth) never moves; a proxied tool with no executor
+          # route is instead denied at evaluation, which pre-empts
+          # scenarios like the oversized-response probe (run
+          # 45305735253, probes 11.0/11.3).
+          acr-gateway:
+            environment:
+              EXECUTE_ALLOWED_ACTIONS: "false"
+              TOOL_EXECUTOR_MAP_JSON: ""
           EOF
       - name: Record revision and runtime
         run: |
