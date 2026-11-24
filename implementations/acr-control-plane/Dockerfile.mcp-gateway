@@ -25,7 +25,14 @@ COPY src/ ./src/
 
 ENV PYTHONPATH=/app/src
 ENV PYTHONUNBUFFERED=1
-ENV WEB_CONCURRENCY=2
+# The pinned tool catalog is in-memory state held per process
+# (src/acr/mcp_gateway). More than one worker splits that state:
+# a definition change observed by one process is invisible to
+# the others, and tool-pinning enforcement becomes a coin flip
+# (red-team finding F-4, category 11, 2026-11-23). The v1.5.0
+# deployment contract is one gateway instance fronting one
+# upstream server, as a single process.
+ENV WEB_CONCURRENCY=1
 
 EXPOSE 8080
 
