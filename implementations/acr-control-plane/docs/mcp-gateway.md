@@ -132,12 +132,18 @@ reports liveness and whether the catalog is pinned.
 
 Deployment notes:
 
-- The service is stateless except for the in-process tool catalog.
-  With multiple replicas, each replica pins the catalog from the first
-  list it serves; a definition change is detected by every replica on
-  its next list. Pin replicas to a single instance if you need a
-  single pinning event, or accept per-replica pinning — enforcement is
-  identical either way.
+- The service is stateless except for the in-process tool catalog,
+  and that catalog is **per process**: it lives in the memory of the
+  single gateway process that served the lists. Run the gateway as
+  exactly one process (the shipped image sets `WEB_CONCURRENCY=1`)
+  and one instance per upstream server. Multiple workers or replicas
+  each hold their own catalog: a definition change is only detected
+  by a process that serves a list after the change, while a call can
+  land on another process whose catalog still shows the tool
+  unchanged — so pinning enforcement is NOT identical across
+  processes, and multi-process deployment silently weakens it
+  (red-team finding F-4, 2026-11-23). Shared catalog state for
+  scale-out is future work, not a v1.5.0 claim.
 - Transports: streamable HTTP (JSON and SSE responses) in 1.5.0. The
   deprecated HTTP+SSE two-endpoint transport and stdio are not
   supported by the gateway service; run stdio servers behind a
