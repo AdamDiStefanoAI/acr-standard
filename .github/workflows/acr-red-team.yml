@@ -34,6 +34,25 @@
 #   and runs the harness with REDTEAM_DEGRADED=1. On failure the safe
 #   answer must be deny: no evaluation may allow and nothing may
 #   execute while the policy engine is down.
+#
+#   The third job (red-team-mcp) runs category 11 (MCP gateway) only:
+#   it boots the same stack plus docker-compose.mcp-gateway-test.yml
+#   under the mcp-gateway profile, so the real gateway proxies the
+#   fixture MCP server (scripts/fixture_mcp_server.py). The overlay
+#   publishes the gateway on the runner loopback (127.0.0.1:8080) but
+#   deliberately publishes no fixture port; the job generates one
+#   extra override publishing the fixture on 127.0.0.1:9000 so the
+#   harness can drive the fixture's /__control__ endpoints and read
+#   its execution log (MCP_FIXTURE_URL) — the harness's control
+#   channel by design; all probe tool traffic still reaches the
+#   fixture only through the gateway. Before running the harness the
+#   job registers the gateway's own agent (acr-mcp-gateway, the
+#   overlay's MCP_GATEWAY_AGENT_ID) with query_customer_db and
+#   fetch_balance allowed: the benign control call must forward and
+#   execute exactly once, the category-1 destructive payload replayed
+#   through the proxy must be blocked by the same guardrail, and a
+#   swapped tool definition must block the tool until an operator
+#   re-pins the catalog.
 
 name: ACR red-team (disposable, manual only)
 on:
@@ -202,4 +221,126 @@ jobs:
         with:
           name: acr-red-team-degraded-${{ github.run_id }}-${{ github.run_attempt }}
           path: implementations/acr-control-plane/red-team-evidence-degraded/
+          retention-days: 30
+
+  red-team-mcp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: implementations/acr-control-plane
+    env:
+      COMPOSE_PROJECT_NAME: acr-redteam-mcp-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_FILE: docker-compose.yml:docker-compose.full-stack-test.yml:docker-compose.mcp-gateway-test.yml:docker-compose.redteam-mcp-ci.yml
+      COMPOSE_PROFILES: mcp-gateway
+      OPERATOR_API_KEYS_JSON: '{"ci-operator-only":{"subject":"ci-operator","roles":["agent_admin","approver","security_admin","auditor","killswitch_operator"]}}'
+      SERVICE_OPERATOR_API_KEY: ci-operator-only
+      EXECUTOR_HMAC_SECRET: ci-execution-only-not-a-production-secret-123456789
+      EXECUTOR_CREDENTIAL_SECRET: ci-brokered-only-not-a-production-secret-987654321
+      JWT_SECRET_KEY: ci-jwt-only-not-a-production-secret-123456789012345
+      KILLSWITCH_SECRET: ci-kill-only-not-a-production-secret-12345678901234
+      ACR_ENV: development
+      OPERATOR_API_KEY: "ci-operator-only"
+      MCP_GATEWAY_URL: http://127.0.0.1:8080/mcp
+      MCP_FIXTURE_URL: http://127.0.0.1:9000
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Write the fixture-port override for this job
+        run: |
+          # docker-compose.mcp-gateway-test.yml deliberately publishes
+          # no fixture port (in a real deployment the upstream is
+          # reachable only through the gateway). The harness needs
+          # MCP_FIXTURE_URL to drive the fixture's /__control__
+          # endpoints and read its execution log, so this job — and
+          # only this job — publishes the fixture on the runner
+          # loopback. Probe tool traffic still goes through the
+          # gateway; the direct channel is control/verification only.
+          cat > docker-compose.redteam-mcp-ci.yml <<'EOF'
+          services:
+            mcp-fixture:
+              ports: !override ["127.0.0.1:9000:9000"]
+          EOF
+      - name: Record revision and runtime
+        run: |
+          mkdir -p red-team-evidence-mcp
+          git rev-parse HEAD > red-team-evidence-mcp/revision.txt
+          git log -1 --format='%H %ci %s' >> red-team-evidence-mcp/revision.txt
+          docker version > red-team-evidence-mcp/docker-version.txt
+          docker compose version >> red-team-evidence-mcp/docker-version.txt
+          docker compose config --quiet
+      - name: Fail fast if the harness is absent
+        run: |
+          test -f scripts/red_team_harness.py || {
+            echo '::error::scripts/red_team_harness.py is missing. Add it from the approved draft before running; the run must never report results it did not execute.'
+            exit 1
+          }
+          test -f scripts/fixture_mcp_server.py || {
+            echo '::error::scripts/fixture_mcp_server.py is missing. Category 11 proxies the fixture MCP server; without it the category cannot run.'
+            exit 1
+          }
+      - name: Pull disposable images
+        timeout-minutes: 5
+        run: docker compose pull postgres redis opa
+      - name: Build and start the disposable stack with the MCP gateway
+        timeout-minutes: 12
+        run: docker compose up --build -d --wait --wait-timeout 300
+      - name: Wait for the control plane, gateway, and fixture
+        timeout-minutes: 3
+        run: |
+          for i in $(seq 1 24); do
+            if curl -fsS http://127.0.0.1:8000/acr/ready > /dev/null \
+              && curl -fsS http://127.0.0.1:8080/health > /dev/null \
+              && curl -fsS http://127.0.0.1:9000/health > /dev/null; then
+              echo "control plane, MCP gateway, and fixture are up"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo '::error::control plane, MCP gateway, or fixture never became ready; category 11 cannot run.'
+          exit 1
+      - name: Register the MCP gateway agent
+        run: |
+          # The gateway evaluates every tools/call as its own agent
+          # (MCP_GATEWAY_AGENT_ID=acr-mcp-gateway in the test overlay).
+          # Register it like the harness registers its probe agent,
+          # with the two fixture tools allowed: probe 11.0's benign
+          # call must forward, and probe 11.3's oversized-response
+          # call must be allowed so the proxy's size cap is what
+          # blocks delivery. A registration gap must fail this job
+          # here, not surface as a harness mismatch.
+          code=$(curl -s -o /tmp/mcp-agent-registration.json -w '%{http_code}' \
+            -X POST http://127.0.0.1:8000/acr/agents \
+            -H "X-Operator-API-Key: ${OPERATOR_API_KEY}" \
+            -H 'Content-Type: application/json' \
+            -d '{"agent_id":"acr-mcp-gateway","owner":"redteam@example.com","purpose":"MCP gateway proxy agent for red-team category 11 (synthetic data only)","risk_tier":"medium","allowed_tools":["query_customer_db","fetch_balance"],"forbidden_tools":["delete_customer"],"boundaries":{"max_actions_per_minute":30,"max_cost_per_hour_usd":5.0}}')
+          cat /tmp/mcp-agent-registration.json
+          if [ "$code" != "201" ] && [ "$code" != "409" ]; then
+            echo "::error::MCP gateway agent registration failed (HTTP $code); category 11 control probes cannot forward without it."
+            exit 1
+          fi
+          echo "MCP gateway agent registered (HTTP $code)"
+      - name: Run the red-team harness (category 11, MCP gateway)
+        timeout-minutes: 20
+        run: |
+          python3 scripts/red_team_harness.py \
+            --categories "11" \
+            --evidence red-team-evidence-mcp/red-team-evidence.jsonl
+      - name: Capture stack logs
+        if: always()
+        run: |
+          docker compose ps -a > red-team-evidence-mcp/compose-status.txt
+          docker compose logs --no-color --tail 300 > red-team-evidence-mcp/compose.log
+      - name: Tear down only this run's disposable stack
+        if: always()
+        timeout-minutes: 3
+        run: docker compose down -v --remove-orphans
+      - name: Retain bounded synthetic evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: acr-red-team-mcp-${{ github.run_id }}-${{ github.run_attempt }}
+          path: implementations/acr-control-plane/red-team-evidence-mcp/
           retention-days: 30
