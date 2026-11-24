@@ -280,6 +280,58 @@ class TestDriftDetector:
         assert score.agent_id == "agent-scored"
         assert score.sample_count == 40
 
+    async def test_compute_drift_score_ready_without_manual_recompute(
+        self, db: AsyncSession
+    ):
+        """Regression (red-team finding F-5): samples recorded through the
+        live path must make the baseline ready WITHOUT anyone calling
+        recompute_baseline by hand. Previously compute_drift_score gated
+        on the stored sample_count, which only recompute_baseline sets,
+        and recompute was only reachable past that same gate — so every
+        fresh agent deadlocked at sample_count=0 and drift readiness
+        (and drift-based graduated response) never activated."""
+        for i in range(12):
+            await record_metric_sample(
+                db,
+                agent_id="agent-live-path",
+                correlation_id=f"corr-live-{i}",
+                tool_name="query_db",
+                action_type="read",
+                policy_denied=False,
+                latency_ms=40 + i,
+            )
+        await db.commit()
+
+        score = await compute_drift_score(db, "agent-live-path")
+        await db.commit()
+
+        assert score.is_baseline_ready is True
+        assert score.sample_count == 12
+
+    async def test_compute_drift_score_partial_samples_reported(
+        self, db: AsyncSession
+    ):
+        """Below the minimum, the score stays not-ready but sample_count
+        must reflect the samples actually recorded (F-5)."""
+        for i in range(5):
+            await record_metric_sample(
+                db,
+                agent_id="agent-partial",
+                correlation_id=f"corr-partial-{i}",
+                tool_name="query_db",
+                action_type="read",
+                policy_denied=False,
+                latency_ms=40 + i,
+            )
+        await db.commit()
+
+        score = await compute_drift_score(db, "agent-partial")
+        await db.commit()
+
+        assert score.is_baseline_ready is False
+        assert score.sample_count == 5
+        assert score.score == 0.0
+
     async def test_compute_drift_score_signals_populated(self, db: AsyncSession):
         """Scored result should include individual signal breakdowns."""
         await _seed_samples(db, "agent-signals", n=40)
