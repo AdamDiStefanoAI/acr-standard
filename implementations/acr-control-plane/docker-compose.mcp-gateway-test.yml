@@ -9,7 +9,7 @@ services:
   mcp-fixture:
     build:
       context: .
-      dockerfile: Dockerfile.mcp-gateway
+      dockerfile: Dockerfile.mcp-fixture
     command: ["python", "scripts/fixture_mcp_server.py", "--port", "9000"]
     ports: !reset []
     environment:

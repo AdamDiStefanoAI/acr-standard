@@ -1,0 +1,13 @@
+# Fixture MCP server for validation stacks only (MCP gateway
+# validation and red-team category 11). Stdlib-only. Deliberately
+# NOT part of the gateway image: the fixture carries an
+# unauthenticated /__control__ endpoint for attack simulation and
+# must never ship in a deployed artifact.
+FROM python:3.12-slim
+WORKDIR /app
+COPY scripts/fixture_mcp_server.py ./scripts/fixture_mcp_server.py
+ENV PYTHONUNBUFFERED=1
+EXPOSE 9000
+RUN useradd -r -u 1000 fixture
+USER fixture
+CMD ["python", "scripts/fixture_mcp_server.py", "--port", "9000"]
