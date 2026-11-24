@@ -1,11 +1,8 @@
-# ACR Control Plane v1.5.0 — release notes (DRAFT)
+# ACR Control Plane v1.5.0 — release notes
 
-> **Draft for the v1.5.0 GitHub release.** Finalize at tag time:
-> confirm the merged PR list, the final test count, and that red-team
-> categories 1–3 have run green against the release candidate. The
-> curated record is the CHANGELOG `[1.5.0]` section; these notes are
-> the user-facing summary. The ACR Standard (specification) stays at
-> v1.2.0 — this is an implementation release.
+> The curated record is the CHANGELOG `[1.5.0]` section; these notes
+> are the user-facing summary. The ACR Standard (specification)
+> stays at v1.2.0 — this is an implementation release.
 
 ## The pilot release
 
@@ -73,10 +70,10 @@ publish your own numbers instead of trusting ours.
 
 ## Upgrade notes
 
-- **Migrations 0016–0022** apply in order: 0016 enforcement mode,
+- **Migrations 0016–0023** apply in order: 0016 enforcement mode,
   0017 evaluation inputs, 0018 policy simulations, 0019 auditor
   grant expiry, 0020 integration outbox, 0021 decision bundle hash,
-  0022 outbox SIEM constraint. All are transactional; the standard
+  0022 outbox SIEM constraint, 0023 outbox server defaults. All are transactional; the standard
   initContainer/compose migration step handles them. No migration
   alters existing decision records; 0021 leaves pre-existing rows
   with a NULL bundle hash (see limitations).
@@ -109,8 +106,11 @@ publish your own numbers instead of trusting ours.
 - **Teams, ServiceNow, Sentinel, Splunk, and syslog are
   UNVERIFIED**: built to the vendors' published formats and
   contract-tested against mocks only, pending live tenants and
-  instances. Slack is contract-tested against a mocked Web API;
-  live-workspace verification is a documented operator smoke step.
+  instances. Slack is contract-tested against a mocked Web API and
+  was verified live in a real workspace on 2026-11-23 (approval card
+  posted, decision recorded, card re-rendered in its decided state);
+  the documented operator smoke step remains the way to verify a new
+  workspace.
 - **Published benchmark numbers are a single-host floor**, measured
   with the load generator co-located on a small shared VM. They are
   a reproduction target for equivalent hardware (±25% p50), not a

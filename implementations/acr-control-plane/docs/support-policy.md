@@ -40,7 +40,7 @@ say and nothing more.
 
 | Integration | Status |
 |---|---|
-| Slack approvals & alerts | Contract-tested against a mocked Slack Web API, including signature verification and chat-decision binding. Live-workspace verification is a documented operator smoke step (app manifest + checklist ship in `examples/slack/`) |
+| Slack approvals & alerts | Contract-tested against a mocked Slack Web API, including signature verification and chat-decision binding, and verified live in a real workspace on 2026-11-23 (approval card posted, Approve decision recorded through the approvals API, card re-rendered in its decided state). The operator smoke step (app manifest + checklist ship in `examples/slack/`) remains the way to verify a new workspace |
 | Generic approval webhook (pre-existing) | Unchanged by 1.5.0; covered by the n8n validation workflow |
 | Microsoft Teams | **UNVERIFIED** — built to published formats, contract tests against mocks only |
 | ServiceNow | **UNVERIFIED** — Table API contract tests against mocks only |
@@ -91,9 +91,18 @@ gating as follows:
 |---|---|---|
 | 1 | Content-guardrail evasion (direct path) | Implemented; must run green against the release candidate |
 | 2 | Observe-mode confusion (WS1) | Implemented; must run green |
-| 3 | MCP gateway: poisoning, cross-server confusion, oversized responses (WS5), plus the category-1 parity suite through the proxy | Implemented; must run green |
-| 4–10 | — | **Not implemented.** A category that did not run is never reported as a pass |
+| 3 | Approvals: replay, substitution, and execution-ledger probes against the pillar-6 approval flow | Implemented; release evidence |
+| 4 | Identity: token binding, agent-ID mismatch, deregistration lifecycle | Implemented; release evidence |
+| 5 | Evidence: decision-record completeness and readback outside the agent's reach | Implemented; release evidence |
+| 6 | Kill switch and graduated containment, including restore | Implemented; release evidence |
+| 7 | Credential broker: forged, cross-tool, and wrong-audience executor credentials | Implemented; release evidence |
+| 8 | Drift detection against a frozen, governance-approved baseline | Implemented; release evidence |
+| 9 | Prompt injection: framing must not change any gateway decision | Implemented; release evidence |
+| 10 | Fail-closed under degradation (OPA stopped): nothing allowed, nothing executes | Implemented; release evidence |
+| 11 | MCP gateway: poisoning, cross-server confusion, oversized responses, tool-definition pinning (WS5), plus the category-1 parity suite through the proxy | Implemented; release evidence |
 
-A release is not done until every implemented category has run green
-against the release candidate. Categories are added when the
-corresponding surface ships, not before.
+A release is not done until categories 1–3 have run green against
+the release candidate and every implemented category has been run,
+with its results recorded in the release's red-team findings. A
+category that did not run is never reported as a pass. Categories are
+added when the corresponding surface ships, not before.
