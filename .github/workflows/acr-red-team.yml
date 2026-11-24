@@ -270,10 +270,10 @@ jobs:
           # route is instead denied at evaluation, which pre-empts
           # scenarios like the oversized-response probe (run
           # 45305735253, probes 11.0/11.3).
-          acr-gateway:
-            environment:
-              EXECUTE_ALLOWED_ACTIONS: "false"
-              TOOL_EXECUTOR_MAP_JSON: ""
+            acr-gateway:
+              environment:
+                EXECUTE_ALLOWED_ACTIONS: "false"
+                TOOL_EXECUTOR_MAP_JSON: ""
           EOF
       - name: Record revision and runtime
         run: |
