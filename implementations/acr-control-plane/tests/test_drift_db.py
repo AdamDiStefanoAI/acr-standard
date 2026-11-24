@@ -280,9 +280,7 @@ class TestDriftDetector:
         assert score.agent_id == "agent-scored"
         assert score.sample_count == 40
 
-    async def test_compute_drift_score_ready_without_manual_recompute(
-        self, db: AsyncSession
-    ):
+    async def test_compute_drift_score_ready_without_manual_recompute(self, db: AsyncSession):
         """Regression (red-team finding F-5): samples recorded through the
         live path must make the baseline ready WITHOUT anyone calling
         recompute_baseline by hand. Previously compute_drift_score gated
@@ -308,9 +306,7 @@ class TestDriftDetector:
         assert score.is_baseline_ready is True
         assert score.sample_count == 12
 
-    async def test_compute_drift_score_partial_samples_reported(
-        self, db: AsyncSession
-    ):
+    async def test_compute_drift_score_partial_samples_reported(self, db: AsyncSession):
         """Below the minimum, the score stays not-ready but sample_count
         must reflect the samples actually recorded (F-5)."""
         for i in range(5):
