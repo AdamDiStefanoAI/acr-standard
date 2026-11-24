@@ -281,7 +281,10 @@ services:
       MCP_GATEWAY_TOOL_PINNING: ${MCP_GATEWAY_TOOL_PINNING:-enforce}
       ACR_ENV: ${ACR_ENV:-development}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      WEB_CONCURRENCY: ${MCP_GATEWAY_WORKERS:-2}
+      # Exactly one worker: the pinned tool catalog is per-process
+      # state (red-team finding F-4), and the service refuses to start
+      # with WEB_CONCURRENCY > 1 rather than split enforcement.
+      WEB_CONCURRENCY: ${MCP_GATEWAY_WORKERS:-1}
     depends_on:
       acr-gateway:
         condition: service_healthy

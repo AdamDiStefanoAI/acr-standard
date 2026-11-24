@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from acr.gateway.models import ActionRequest, EvaluateResponse
 from acr.mcp_gateway.proxy import McpProxy, ProxyConfig
-from acr.mcp_gateway.service import create_app
+from acr.mcp_gateway.service import _enforce_single_process, create_app
 from acr.mcp_gateway.upstream import HttpUpstream
 from acr.sdk.client import AsyncACRAgentSession
 from acr.sdk.errors import ACRHTTPError
@@ -700,3 +700,28 @@ class TestCategory1ParityThroughProxy:
             else:
                 assert not _is_error_result(proxied), f"{probe_id}: proxy blocked an allow"
                 assert len(fixture.executions) == before + 1
+
+
+# ── Single-process guard (red-team finding F-4) ─────────────────────────────
+
+
+def test_single_process_guard_refuses_multiple_workers(monkeypatch):
+    """WEB_CONCURRENCY > 1 splits the pinned catalog across processes:
+    a poisoning one worker observes does not block calls landing on
+    another. Startup must fail closed, not run with split enforcement."""
+    monkeypatch.setenv("WEB_CONCURRENCY", "2")
+    with pytest.raises(RuntimeError, match="exactly one process"):
+        _enforce_single_process()
+
+
+def test_single_process_guard_rejects_non_integer(monkeypatch):
+    monkeypatch.setenv("WEB_CONCURRENCY", "many")
+    with pytest.raises(RuntimeError, match="must be an integer"):
+        _enforce_single_process()
+
+
+def test_single_process_guard_accepts_one_or_unset(monkeypatch):
+    monkeypatch.setenv("WEB_CONCURRENCY", "1")
+    _enforce_single_process()
+    monkeypatch.delenv("WEB_CONCURRENCY")
+    _enforce_single_process()

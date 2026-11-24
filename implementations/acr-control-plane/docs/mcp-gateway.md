@@ -135,7 +135,9 @@ Deployment notes:
 - The service is stateless except for the in-process tool catalog,
   and that catalog is **per process**: it lives in the memory of the
   single gateway process that served the lists. Run the gateway as
-  exactly one process (the shipped image sets `WEB_CONCURRENCY=1`)
+  exactly one process (the shipped image sets `WEB_CONCURRENCY=1`,
+  the reference compose stack defaults `MCP_GATEWAY_WORKERS` to 1,
+  and the service refuses to start with more than one worker)
   and one instance per upstream server. Multiple workers or replicas
   each hold their own catalog: a definition change is only detected
   by a process that serves a list after the change, while a call can
