@@ -12,6 +12,7 @@ cannot be established. No network, no Docker.
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -30,7 +31,17 @@ def harness():
 class FakeGateway:
     """A miniature, correct-by-default ACR stack behind the harness's
     http()/_executor_http() seams. Weakened variants flip one flag to
-    prove the corresponding probe reports a fail, not a pass."""
+    prove the corresponding probe reports a fail, not a pass.
+
+    Deregistration mirrors the real registry (pillar1_identity/
+    registry.py): DELETE moves the agent to the terminal `retired`
+    state — the record survives, a repeat POST /acr/agents is a 409
+    that does NOT reactivate it, and token issuance for a retired
+    agent is a 403 AGENT_NOT_REGISTERED. (An earlier version of this
+    fake deleted the record outright, which made re-registration
+    restore the agent — semantics the product does not have, and the
+    reason probe 4.8's original form passed here while failing
+    live.)"""
 
     def __init__(self, harness, degraded=False):
         self.h = harness
@@ -94,8 +105,13 @@ class FakeGateway:
                 return self._unauthorized()
             agent_id = body["agent_id"]
             if agent_id in self.agents:
+                # The record survives deregistration (retired), so a
+                # repeat POST is a 409 and never a reactivation.
                 return 409, {"error_code": "AGENT_ALREADY_EXISTS"}, {}
-            self.agents[agent_id] = {"allowed_tools": list(body["allowed_tools"])}
+            self.agents[agent_id] = {
+                "allowed_tools": list(body["allowed_tools"]),
+                "retired": False,
+            }
             return 201, {"agent_id": agent_id}, {}
         if len(parts) == 3 and parts[:2] == ["acr", "agents"]:
             agent_id = parts[2]
@@ -116,13 +132,24 @@ class FakeGateway:
             if method == "DELETE":
                 if not self._operator_ok(headers):
                     return self._unauthorized()
-                self.agents.pop(agent_id, None)
+                if agent_id not in self.agents:
+                    return 404, {"error_code": "AGENT_NOT_FOUND"}, {}
+                self.agents[agent_id]["retired"] = True
                 return 204, {}, {}
         if len(parts) == 4 and parts[:2] == ["acr", "agents"] and parts[3] == "token":
             if not self._operator_ok(headers):
                 return self._unauthorized()
             if parts[2] not in self.agents:
                 return 404, {"error_code": "AGENT_NOT_FOUND"}, {}
+            if self.agents[parts[2]]["retired"]:
+                return (
+                    403,
+                    {
+                        "error_code": "AGENT_NOT_REGISTERED",
+                        "message": f"Agent '{parts[2]}' is deregistered",
+                    },
+                    {},
+                )
             return 200, {"access_token": f"tok-{parts[2]}", "expires_in_seconds": 1800}, {}
         if route == "/acr/evaluate" and method == "POST":
             return self._evaluate(body or {}, headers)
@@ -274,7 +301,7 @@ class FakeGateway:
             )
         if self.degraded:
             return 503, {"error_code": "POLICY_ENGINE_ERROR"}, {}
-        if agent_id not in self.agents:
+        if agent_id not in self.agents or self.agents[agent_id]["retired"]:
             return 403, {"error_code": "AGENT_NOT_REGISTERED"}, {}
         if agent_id in self.killed:
             self._record_decision(corr, agent_id, "deny")
@@ -372,12 +399,38 @@ def test_category_3_replay_reexecution_is_a_fail(harness, stack):
     assert verdicts(records)["3.2-replay-execute"] == "fail"
 
 
-def test_category_4_identity_all_pass(harness, stack):
+def test_category_4_identity_probes(harness, stack):
     fake, records = stack
     harness.run_category_4(harness.TokenManager(), records.append)
     v = verdicts(records)
-    assert len(v) == 9
-    assert all(x == "pass" for x in v.values()), v
+    assert len(v) == 10  # 4.0-4.8 plus the 4.8b stale-token record
+    # 4.8 fails honestly against faithful deregistration semantics:
+    # deregistration retires the agent_id terminally, the repeat POST
+    # is a 409 that does not reactivate it, and a fresh token cannot
+    # be issued — so the plan's "restored" is not observed. The
+    # observed string pins exactly which token was presented at each
+    # step (the original probe re-presented the PRE-deregistration
+    # token and read its correct deny as "not restored").
+    assert v["4.8-token-after-deregistration"] == "fail"
+    rec48 = next(r for r in records if r["probe"] == "4.8-token-after-deregistration")
+    assert rec48["expected"] == "blocked-then-restored"
+    assert rec48["input"]["agent_id"] == harness.AGENT_DEREG
+    assert "while-deleted-403" in rec48["decision"]
+    assert "reregister-http-409" in rec48["decision"]
+    assert "fresh-token-issuance-http-403-AGENT_NOT_REGISTERED" in rec48["decision"]
+    # 4.8b: the pre-deregistration token stays dead after the
+    # re-registration attempt — the secure half of the probe.
+    assert v["4.8b-stale-token-after-reregister"] == "pass"
+    others = {
+        p: x
+        for p, x in v.items()
+        if p not in ("4.8-token-after-deregistration", "4.8b-stale-token-after-reregister")
+    }
+    assert all(x == "pass" for x in others.values()), others
+    # The shared peer survives category 4: 4.8 destroyed only the
+    # dedicated deregistration agent, so later categories can still
+    # mint B's token.
+    assert harness.TokenManager(harness.AGENT_B).get()
 
 
 def test_category_4_mismatch_allowed_is_a_fail(harness, stack):
@@ -501,3 +554,129 @@ def test_canonical_payload_sha256(harness):
     assert (
         harness.canonical_payload_sha256(payload) == hashlib.sha256(canonical.encode()).hexdigest()
     )
+
+
+def test_category_6_survives_peer_deregistration(harness, stack):
+    """The 2026-11-23 live-run crash sequence: the shared peer B is
+    deregistered before category 6 runs. Deregistration is terminal,
+    so category 6's own re-registration cannot revive B and B's token
+    cannot be minted. The harness must not crash: probe 6.4 records
+    the issuance failure as inconclusive and the category finishes."""
+    fake, records = stack
+    harness.register_agent(harness.AGENT_B)
+    status, _, _ = harness.operator("DELETE", f"/acr/agents/{harness.AGENT_B}")
+    assert status == 204
+    harness.run_category_6(harness.TokenManager(), records.append)
+    v = verdicts(records)
+    assert len(v) == 8
+    assert v["6.4-cross-identity-while-killed"] == "inconclusive"
+    rec64 = next(r for r in records if r["probe"] == "6.4-cross-identity-while-killed")
+    assert "AGENT_NOT_REGISTERED" in rec64["decision"]
+    assert "AGENT_NOT_REGISTERED" in rec64["inconclusive_reason"]
+    others = {p: x for p, x in v.items() if p != "6.4-cross-identity-while-killed"}
+    assert all(x == "pass" for x in others.values()), others
+    assert harness.AGENT_ID not in fake.killed  # restored by 6.7
+
+
+def _run_main(harness, monkeypatch, tmp_path, runners, categories):
+    monkeypatch.setattr(harness, "RUNNERS", runners)
+    evidence = tmp_path / "evidence.jsonl"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["red_team_harness.py", "--categories", categories, "--evidence", str(evidence)],
+    )
+    rc = harness.main()
+    lines = [json.loads(x) for x in evidence.read_text().splitlines() if x.strip()]
+    return rc, lines
+
+
+def test_main_isolates_a_raising_category(harness, stack, monkeypatch, tmp_path, capsys):
+    """A category that raises records an explicit error row, the run
+    continues with the remaining categories, and the exit code is
+    non-zero."""
+
+    def raiser(tokens, record):
+        raise RuntimeError("boom")
+
+    def ok_runner(tokens, record):
+        record(
+            {
+                "category": "2",
+                "probe": "2.0-ok",
+                "hypothesis": "h",
+                "input": {},
+                "expected": "allow",
+                "http_status": 200,
+                "decision": "allow",
+                "correlation_id": None,
+                "reason": None,
+            }
+        )
+        return [("2.0-ok", "allow", "allow", None)]
+
+    rc, lines = _run_main(harness, monkeypatch, tmp_path, {"1": raiser, "2": ok_runner}, "1,2")
+    assert rc == 1
+    errors = [r for r in lines if r.get("status") == "error"]
+    assert len(errors) == 1 and errors[0]["category"] == "1"
+    assert "RuntimeError: boom" in errors[0]["error"]
+    assert "not a pass" in errors[0]["note"]
+    # The later category still ran and its probe was recorded.
+    assert any(r.get("probe") == "2.0-ok" for r in lines)
+    out = capsys.readouterr().out
+    assert "verdicts: 1 pass, 0 fail, 0 inconclusive" in out
+    assert "Categories that did not finish: 1" in out
+
+
+def test_main_summary_counts_verdicts_not_strings(harness, stack, monkeypatch, tmp_path, capsys):
+    """The degraded-run defect: a probe whose expected/observed
+    strings differ ("not-allowed" vs "deny") but whose verdict is
+    pass must be summarized as a pass, and the run exits 0."""
+
+    def verdict_runner(tokens, record):
+        record(
+            {
+                "category": "1",
+                "probe": "1.0-x",
+                "hypothesis": "h",
+                "input": {},
+                "expected": "not-allowed",
+                "http_status": 403,
+                "decision": "deny",
+                "correlation_id": None,
+                "reason": None,
+                "verdict": "pass",
+            }
+        )
+        return [("1.0-x", "not-allowed", "deny", None)]
+
+    rc, _ = _run_main(harness, monkeypatch, tmp_path, {"1": verdict_runner}, "1")
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "1 probes recorded; verdicts: 1 pass, 0 fail, 0 inconclusive" in out
+    assert "observed != expected" not in out
+
+
+def test_main_exit_nonzero_on_fail_verdict(harness, stack, monkeypatch, tmp_path):
+    """A probe verdict of fail makes the process exit non-zero even
+    when every category finishes."""
+
+    def failing_runner(tokens, record):
+        record(
+            {
+                "category": "1",
+                "probe": "1.0-x",
+                "hypothesis": "h",
+                "input": {},
+                "expected": "deny",
+                "http_status": 200,
+                "decision": "allow",
+                "correlation_id": None,
+                "reason": None,
+                "verdict": "fail",
+            }
+        )
+        return [("1.0-x", "deny", "allow", None)]
+
+    rc, _ = _run_main(harness, monkeypatch, tmp_path, {"1": failing_runner}, "1")
+    assert rc == 1

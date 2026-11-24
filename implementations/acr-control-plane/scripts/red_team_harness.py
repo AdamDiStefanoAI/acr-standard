@@ -131,7 +131,12 @@ finding, never a silent pass.
 
 Requesting an unimplemented category exits 2 with "not implemented"
 and records that fact in the evidence file. A category that did not
-run is never a pass.
+run is never a pass. A category that raises mid-run records an error
+row and the run continues with the remaining categories; the process
+exits 1 when any category errored or any probe's verdict is fail,
+and 0 only when no probe failed and every category finished. The
+closing summary counts verdicts, not literal expected/observed
+string differences.
 
 Usage (from implementations/acr-control-plane, stack already up):
     python3 scripts/red_team_harness.py --categories 1 \
@@ -324,9 +329,10 @@ class ProbeLog:
     """Evidence recorder for categories 3-10. Every probe carries an
     explicit verdict: pass (attack blocked / control behaved), fail
     (bypass succeeded), or inconclusive (a precondition could not be
-    established — never a pass). Rows feed main()'s mismatch summary
-    with the same (probe, expected, observed, correlation) shape the
-    earlier categories use."""
+    established — never a pass). The verdicts on the evidence records
+    feed main()'s summary and exit code; rows keep the same
+    (probe, expected, observed, correlation) shape the earlier
+    categories use."""
 
     def __init__(self, category, record):
         self.category = category
@@ -820,6 +826,15 @@ def run_category_11(tokens, record):
 # resumption.check_request). The executor ledger is the ground truth:
 # a replay or substitution that "succeeded" must show up there.
 AGENT_B = "redteam-02"
+# Dedicated disposable agent for probe 4.8 (deregistration). That probe
+# destroys its subject, and deregistration is terminal for an agent_id
+# (pillar1_identity/registry.py: deregister moves the record to the
+# terminal `retired` lifecycle state; the surviving record makes a
+# repeat POST /acr/agents a 409, not a reactivation). Running 4.8
+# against the shared AGENT_B would leave B retired for every later
+# category that needs a live peer (category 6 crashed on exactly this
+# in the first full live run, 2026-11-23).
+AGENT_DEREG = "redteam-dereg"
 
 
 def run_category_3(tokens, record):
@@ -1150,21 +1165,59 @@ def run_category_4(tokens, record):
              verdict="pass" if status == 401 else "fail")
 
     # 4.8 — a token outlives its registration only on paper: after
-    # the operator deregisters B, B's previously minted token must
-    # stop working at the identity check; re-registering restores it.
-    token_b = tokens_b.get()
-    del_status, _, _ = operator("DELETE", f"/acr/agents/{AGENT_B}")
-    status, body, corr = raw_evaluate(AGENT_B, token_b)
+    # the operator deregisters the agent, its previously minted
+    # token must stop working at the identity check. The approved
+    # plan also expects re-registration to restore access. That
+    # expectation is tested with a FRESH token (this probe), and the
+    # pre-deregistration token's fate is recorded separately (4.8b):
+    # the first full live run (2026-11-23) showed the original form
+    # of this probe re-presenting the PRE-deregistration token after
+    # re-registering and reading its deny as "not restored" — a deny
+    # that is correct either way (a deregistered agent's token must
+    # stay dead) and that cannot distinguish token revocation from
+    # the agent never having been restored at all. The probe runs
+    # against the dedicated AGENT_DEREG, not AGENT_B: deregistration
+    # retires the agent_id permanently (see AGENT_DEREG above), so
+    # destroying the shared peer would poison later categories.
+    tokens_d = TokenManager(AGENT_DEREG)
+    register_agent(AGENT_DEREG)
+    token_d = tokens_d.get()
+    del_status, _, _ = operator("DELETE", f"/acr/agents/{AGENT_DEREG}")
+    status, body, corr = raw_evaluate(AGENT_DEREG, token_d)
     blocked = status in (403, 404) and body.get("decision") != "allow"
-    register_agent(AGENT_B)
-    status2, body2, _ = raw_evaluate(AGENT_B, token_b)
-    ok = del_status == 204 and blocked and body2.get("decision") == "allow"
+    rereg_status = register_agent(AGENT_DEREG)
+    # Restoration, tested with a fresh token only. Issuance is done
+    # with a raw call so a refusal is an observed value, not a crash.
+    fs, fbody, _ = http("POST", f"/acr/agents/{AGENT_DEREG}/token", body={},
+                        headers={"X-Operator-API-Key": OPERATOR_KEY})
+    if fs == 200:
+        s_fresh, b_fresh, _ = raw_evaluate(AGENT_DEREG, fbody["access_token"])
+        fresh_outcome = f"evaluate-{b_fresh.get('decision', f'http-{s_fresh}')}"
+        restored = b_fresh.get("decision") == "allow"
+    else:
+        fresh_outcome = f"issuance-http-{fs}-{fbody.get('error_code')}"
+        restored = False
+    ok = del_status == 204 and blocked and restored
     log.note("4.8-token-after-deregistration",
-             "B's token stops working once B is deregistered (identity bound at each call) and works again after re-registration",
-             {"deregister_status": del_status},
+             "A deregistered agent's token stops working (identity bound at each call); re-registration restores access, proven with a FRESH token (the pre-deregistration token's fate is 4.8b)",
+             {"agent_id": AGENT_DEREG, "deregister_status": del_status,
+              "reregister_http": rereg_status},
              "blocked-then-restored",
-             f"while-deleted-{status}/after-reregister-{body2.get('decision')}",
+             f"while-deleted-{status}/reregister-http-{rereg_status}/fresh-token-{fresh_outcome}",
              status=status, corr=corr, verdict="pass" if ok else "fail")
+    # 4.8b — the pre-deregistration token must stay dead after the
+    # re-registration attempt, whatever re-registration did to the
+    # agent record: an already-issued token is never restored by
+    # re-registering, and its deny is not evidence about restoration.
+    s_stale, b_stale, _ = raw_evaluate(AGENT_DEREG, token_d)
+    stale_dead = s_stale in (401, 403, 404) and b_stale.get("decision") != "allow"
+    log.note("4.8b-stale-token-after-reregister",
+             "A token minted before deregistration does not work after the re-registration attempt (deregistration permanently kills already-issued tokens)",
+             {"agent_id": AGENT_DEREG, "token": "pre-deregistration",
+              "reregister_http": rereg_status},
+             "deny",
+             f"{b_stale.get('decision', f'http-{s_stale}')}/{b_stale.get('error_code')}",
+             status=s_stale, verdict="pass" if stale_dead else "fail")
     return log.rows
 
 
@@ -1403,15 +1456,34 @@ def run_category_6(tokens, record):
                      "X-Correlation-ID": corr})
         return s, b
 
-    s1, b1 = raw(AGENT_ID, tokens_b.get())   # B's token, killed A's id
     s2, b2 = raw(AGENT_B, tokens.get())      # killed A's token, B's id
-    ok = (s1 == 403 and b1.get("error_code") == "AGENT_ID_MISMATCH"
-          and s2 == 403 and b2.get("error_code") == "AGENT_ID_MISMATCH")
-    log.note("6.4-cross-identity-while-killed",
-             "Neither direction of token/body identity confusion lets the killed agent act through another agent",
-             {"pairs": [[AGENT_B, AGENT_ID], [AGENT_ID, AGENT_B]]},
-             "deny-mismatch/deny-mismatch", f"{s1}/{s2}",
-             verdict="pass" if ok else "fail")
+    try:
+        token_b = tokens_b.get()
+    except RuntimeError as exc:
+        token_b = None
+        # B's token cannot be minted — e.g. B was deregistered
+        # earlier in the run and deregistration is terminal for an
+        # agent_id, so the category-start re-registration (a 409 the
+        # harness tolerates) could not revive it. That is a failed
+        # precondition for this probe, recorded as its observed
+        # value — never a harness crash (the first full live run,
+        # 2026-11-23, died here and categories 7-9 never ran). The
+        # category continues with 6.5-6.7, which do not need B.
+        log.inconclusive(
+            "6.4-cross-identity-while-killed",
+            "Neither direction of token/body identity confusion lets the killed agent act through another agent",
+            {"pairs": [[AGENT_B, AGENT_ID], [AGENT_ID, AGENT_B]]},
+            "deny-mismatch/deny-mismatch",
+            f"b-token-unavailable ({exc}); a-token-for-b: http-{s2}/{b2.get('error_code')}")
+    if token_b is not None:
+        s1, b1 = raw(AGENT_ID, token_b)      # B's token, killed A's id
+        ok = (s1 == 403 and b1.get("error_code") == "AGENT_ID_MISMATCH"
+              and s2 == 403 and b2.get("error_code") == "AGENT_ID_MISMATCH")
+        log.note("6.4-cross-identity-while-killed",
+                 "Neither direction of token/body identity confusion lets the killed agent act through another agent",
+                 {"pairs": [[AGENT_B, AGENT_ID], [AGENT_ID, AGENT_B]]},
+                 "deny-mismatch/deny-mismatch", f"{s1}/{s2}",
+                 verdict="pass" if ok else "fail")
 
     # 6.5 — alternate path: a direct call to the executor, skipping
     # the gateway (and its kill check) entirely, has no credentials
@@ -2014,10 +2086,37 @@ def main():
             env_missing[c] = absent
     evidence = open(args.evidence, "a", encoding="utf-8")
 
+    # Verdict tallies are fed by the evidence records themselves, as
+    # they are written — so probes recorded by a category that later
+    # raises still count, and the closing summary can never contradict
+    # the verdicts in the evidence file (the first full live run,
+    # 2026-11-23, printed "6 observed != expected" for a degraded run
+    # whose 6 probes all carried verdict=pass, because the summary
+    # compared expected/observed STRINGS: expected "not-allowed" vs
+    # observed "deny" is a pass with two different spellings).
+    tallies = {"pass": 0, "fail": 0, "inconclusive": 0}
+    literal_mismatches = 0
+    probe_records = 0
+
     def record(rec):
+        nonlocal literal_mismatches, probe_records
         rec["ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         evidence.write(json.dumps(rec) + "\n")
         evidence.flush()
+        if rec.get("probe") is None:
+            return
+        probe_records += 1
+        expected, observed = rec.get("expected"), rec.get("decision")
+        if expected is not None and observed is not None and expected != observed:
+            literal_mismatches += 1
+        verdict = rec.get("verdict")
+        if verdict in tallies:
+            tallies[verdict] += 1
+        elif expected is not None and observed is not None:
+            # Categories 1, 2 and 11 record no verdict field; their
+            # probes use exact-match expectations, so for them the
+            # string comparison IS the verdict.
+            tallies["pass" if expected == observed else "fail"] += 1
 
     if missing or env_missing:
         for c in missing:
@@ -2050,17 +2149,42 @@ def main():
     register_agent()
     tokens = TokenManager()
 
-    rows = []
+    # Per-category isolation: a category that raises records an
+    # explicit error row (a category that did not finish is never a
+    # pass) and the run CONTINUES with the remaining categories —
+    # the first full live run lost categories 7-9 entirely when
+    # category 6 crashed on a token issuance for an agent an earlier
+    # category had deregistered.
+    errored = []
     for cat in requested:
-        rows.extend(RUNNERS[cat](tokens, record))
+        try:
+            RUNNERS[cat](tokens, record)
+        except Exception as exc:  # noqa: BLE001 — isolation is the point
+            errored.append(cat)
+            record({"category": cat, "probe": None, "status": "error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "note": "Category raised mid-run and did not finish; "
+                            "recorded as an error, not a pass. Probes it "
+                            "recorded before the error stand as recorded."})
+            print(f"category {cat}: ERROR {type(exc).__name__}: {exc} "
+                  "(recorded as incomplete; continuing)",
+                  file=sys.stderr)
 
     evidence.close()
-    mismatches = [r for r in rows if r[1] != r[2]]
-    print(f"\n{len(rows)} probes recorded; {len(mismatches)} observed != expected.")
-    if mismatches:
-        print("Mismatches are findings to write up in the draft report, "
-              "not harness failures.")
-    return 0
+    print(f"\n{probe_records} probes recorded; verdicts: "
+          f"{tallies['pass']} pass, {tallies['fail']} fail, "
+          f"{tallies['inconclusive']} inconclusive.")
+    if literal_mismatches:
+        print(f"Note: {literal_mismatches} probe(s) have literally "
+              "differing expected/observed strings; the verdicts above "
+              "govern (some probes use non-literal expectations by "
+              "design, e.g. expected 'not-allowed' vs observed 'deny').")
+    if errored:
+        print(f"Categories that did not finish: {', '.join(errored)}.")
+    if tallies["fail"]:
+        print("Failing probes are findings to write up in the draft "
+              "report, not harness failures.")
+    return 1 if errored or tallies["fail"] else 0
 
 
 if __name__ == "__main__":
