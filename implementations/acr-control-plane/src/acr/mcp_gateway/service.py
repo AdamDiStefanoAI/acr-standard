@@ -27,6 +27,10 @@ Configuration (environment):
   MCP_GATEWAY_MAX_RESPONSE_BYTES  upstream result size cap (default 1MiB)
   MCP_GATEWAY_TOOL_PINNING      "enforce" (default) or "log"
   MCP_GATEWAY_TIMEOUT_SECONDS   upstream HTTP timeout (default 30)
+  WEB_CONCURRENCY               must be 1 (the default): the pinned tool
+                                catalog is per-process state, and the
+                                service refuses to start with more than
+                                one worker (red-team finding F-4)
 """
 
 from __future__ import annotations
@@ -95,6 +99,31 @@ async def _build_proxy() -> McpProxy:
     )
 
 
+def _enforce_single_process() -> None:
+    """Refuse a multi-worker deployment (red-team finding F-4).
+
+    Uvicorn honors WEB_CONCURRENCY, and the pinned tool catalog lives in
+    each process's own memory: with more than one worker, a tool-list
+    poisoning observed by one worker does not block calls landing on
+    another whose catalog still shows the tool unchanged. That failure
+    is silent, so the service fails closed at startup instead of
+    running with split enforcement.
+    """
+    raw = os.environ.get("WEB_CONCURRENCY", "1")
+    try:
+        workers = int(raw)
+    except ValueError:
+        raise RuntimeError(f"WEB_CONCURRENCY must be an integer, got {raw!r}") from None
+    if workers != 1:
+        raise RuntimeError(
+            "acr-mcp-gateway must run as exactly one process "
+            f"(WEB_CONCURRENCY=1); got WEB_CONCURRENCY={raw}. The pinned "
+            "tool catalog is per-process state: multiple workers silently "
+            "split tool-pinning enforcement (red-team finding F-4). Run "
+            "one gateway instance per upstream MCP server instead."
+        )
+
+
 def create_app(proxy: McpProxy | None = None) -> FastAPI:
     """Build the service app. Tests inject a pre-built proxy."""
 
@@ -103,6 +132,7 @@ def create_app(proxy: McpProxy | None = None) -> FastAPI:
         if proxy is not None:
             app.state.proxy = proxy
         else:
+            _enforce_single_process()
             app.state.proxy = await _build_proxy()
         yield
 
