@@ -391,6 +391,7 @@ Conflict Resolution:
 3. **Durable approval and context:** Escalated actions MUST have a durable approval record and present agent identity, declared purpose, requested action and parameters, policy basis, current drift state, and timeout deadline to the reviewer.
 4. **Execution gate:** MUST prevent autonomous execution before approval, enforce timeout behavior, and log approval, denial, override, and timeout outcomes.
 5. **Independent human authority:** Controls MUST remain operable if the agent runtime or model infrastructure is unavailable.
+6. **Reconciliation ownership and terminal bound on waiting:** A run that enters a waiting-for-reconciliation state MUST have a named reconciliation owner and a stated reconciliation deadline. The waiting state MUST convert to a stated terminal state at the deadline whether or not the owner responds; an unanswered owner MUST NOT leave a run waiting with budget or reservations held indefinitely. Reservations for effects recorded as dispatched unknown MUST remain held until the reconciler releases them. The owner MUST be notified with the operation ID and the last confirmed state.
 
 ### Optional Break-Glass Capability (§20)
 Break-glass MAY be provided. If provided, it MUST be scoped and time-limited, logged in tamper-evident form with approver identity, subject to mandatory post-use review, and approved in advance by a defined authority. The multi-party procedure and sample durations in Pattern 3 are implementation choices, not universal conformance requirements.

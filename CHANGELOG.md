@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Unknown-outcome failure contract: pre-dispatch records, dispatch-gate enforcement of pause, terminal account of dispatched effects, and reconciliation ownership with a terminal bound on waiting (P2 items 8 and Failure Modes, §18 item 9, §20 item 6, telemetry schema rule 10). The repository specification moves to v1.3.0.
+
 ## [1.5.0] - 2026-11-23
 
 ### Added
