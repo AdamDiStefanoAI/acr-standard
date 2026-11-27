@@ -2061,14 +2061,241 @@ def run_category_10(tokens, record):
     return log.rows
 
 
+# Category 12 probes (unknown-outcome failure contract).
+# Companion to the spec contract in PR #79 (P2 item 8, P2 failure mode,
+# §18 item 9, §20 item 6, telemetry schema rule 10). Expected result
+# against the current implementation: inconclusive, never a pass — the
+# reference implementation has no reconciliation state, no
+# waiting-for-reconciliation state, no reservation semantics, and no
+# terminal-account query. Gated on ACR_RECONCILIATION_FIXTURE (see
+# CATEGORY_ENV); without it the run records not-run and exits 2.
+# Control calls go through _executor_http to the /__test__/executor/*
+# surface named here, not _fixture_control (which targets the MCP
+# fixture's __control__ endpoint). The fixture surface (test overlay
+# only, never production):
+#   POST /__test__/executor/kill-worker {"correlation_id": ...}
+#   POST /__test__/executor/set-reconciliation-deadline
+#        {"correlation_id": ..., "seconds": N}
+#   POST /__test__/executor/advance-clock {"seconds": N}
+#   GET  /__test__/reconciliation?correlation_id=...
+#   GET  /__test__/evidence?correlation_id=...
+#   GET  /__test__/ledger (already exists) is ground truth for executions.
+# Dedicated disposable agent (category 9 pattern); explicit verdict= on
+# every note; inconclusive, never pass, when the fixture surface is absent.
+AGENT_RECONCILIATION = "redteam-reconciliation"
+
+
+def _reconciliation_http(method, path, body=None):
+    """HTTP against the reconciliation fixture surface on the test
+    overlay. Returns (status, parsed-body)."""
+    return _executor_http(method, path, body=body)
+
+
+def _reconciliation_state(corr):
+    status, body = _reconciliation_http(
+        "GET", f"/__test__/reconciliation?correlation_id={corr}")
+    if status != 200:
+        return None
+    return body
+
+
+def _evidence_record(corr):
+    status, body = _reconciliation_http(
+        "GET", f"/__test__/evidence?correlation_id={corr}")
+    if status != 200:
+        return None
+    return body
+
+
+def run_category_12(tokens, record):
+    log = ProbeLog("12", record)
+    register_agent(AGENT_RECONCILIATION)
+    tokens = TokenManager(AGENT_RECONCILIATION)
+    customer = "C-12000"
+
+    # 12.0 — control: the pre-dispatch record exists before execution.
+    # Authorize a small refund (below the escalation threshold) and
+    # require the evidence record to already carry the pre-dispatch
+    # record: operation id, tool, argument digest, authorizing
+    # decision, correlation id.
+    status, body, corr = evaluate_for(
+        AGENT_RECONCILIATION, tokens, "issue_refund",
+        {"customer_id": customer, "amount": 10,
+         "reason": "red-team probe 12.0"},
+        description="red-team probe 12.0-control")
+    decision = body.get("decision", f"http-{status}")
+    if decision != "allow":
+        log.inconclusive(
+            "12.0-control",
+            "A small refund authorizes, so the pre-dispatch record can be checked",
+            {"tool_name": "issue_refund", "amount": 10},
+            "allow",
+            f"evaluation returned {decision}, not allow; control cannot run")
+        return log.rows
+    evidence = _evidence_record(corr)
+    if evidence is None:
+        log.inconclusive(
+            "12.0-control",
+            "The pre-dispatch record exists before execution",
+            {"correlation_id": corr}, "pre-dispatch record present",
+            "missing fixture surface: GET /__test__/evidence")
+        return log.rows
+    pre = (evidence or {}).get("pre_dispatch") or {}
+    pre_ok = bool(pre.get("operation_id") and pre.get("tool")
+                  and pre.get("argument_digest")
+                  and pre.get("decision") == "allow"
+                  and pre.get("correlation_id") == corr)
+    log.note("12.0-control",
+             "The pre-dispatch record exists before execution, carrying "
+             "operation id, tool, argument digest, authorizing decision, "
+             "and correlation id",
+             {"correlation_id": corr}, "pre-dispatch record present",
+             "present" if pre_ok else f"incomplete: {pre}",
+             status=status, corr=corr,
+             verdict="pass" if pre_ok else "fail")
+    operation_id = pre.get("operation_id")
+
+    # 12.1 — kill the worker after dispatch: the run waits, the
+    # reservation is held, nothing is redispatched. Dispatch the
+    # allowed refund through the executor, kill the worker mid-flight,
+    # then require state waiting_for_reconciliation, reservation held,
+    # and exactly one ledger execution for the operation.
+    _executor_http("POST", "/__test__/executor/set-reconciliation-deadline",
+                   {"correlation_id": corr, "seconds": 30})
+    _executor_http("POST", "/__test__/executor/kill-worker",
+                   {"correlation_id": corr})
+    state = _reconciliation_state(corr)
+    if state is None:
+        log.inconclusive(
+            "12.1-waiting-state",
+            "After worker death, the run waits for reconciliation with "
+            "its reservation held and zero redispatches",
+            {"correlation_id": corr}, "waiting_for_reconciliation",
+            "missing fixture surface: GET /__test__/reconciliation")
+        return log.rows
+    ledger = executor_ledger()
+    executions = ledger_count(ledger, tool_name="issue_refund",
+                              customer_id=customer, amount=10)
+    waiting_ok = (state.get("state") == "waiting_for_reconciliation"
+                  and state.get("reservation_held") is True
+                  and executions == 1)
+    log.note("12.1-waiting-state",
+             "After worker death, the run waits for reconciliation with "
+             "its reservation held and zero redispatches",
+             {"correlation_id": corr, "ledger_executions": executions},
+             "waiting_for_reconciliation, reservation held, 1 execution",
+             f"{state.get('state')}, reservation_held="
+             f"{state.get('reservation_held')}, {executions} execution(s)",
+             corr=corr,
+             verdict="pass" if waiting_ok else "fail")
+
+    # 12.2 — dispatch-gate enforcement: while paused, a second
+    # dispatch of the same operation is denied at the gate, and the
+    # ledger count does not move. A worker deciding to honor the pause
+    # does not satisfy this; the gate must deny.
+    status2, body2, _ = evaluate_for(
+        AGENT_RECONCILIATION, tokens, "issue_refund",
+        {"customer_id": customer, "amount": 10,
+         "reason": "red-team probe 12.2 redispatch",
+         "operation_id": operation_id},
+        description="red-team probe 12.2-redispatch")
+    decision2 = body2.get("decision", f"http-{status2}")
+    ledger2 = executor_ledger()
+    executions2 = ledger_count(ledger2, tool_name="issue_refund",
+                               customer_id=customer, amount=10)
+    gate_ok = decision2 == "deny" and executions2 == 1
+    log.note("12.2-dispatch-gate",
+             "While paused, a redispatch of the same operation is denied "
+             "at the gate and the ledger count does not move",
+             {"operation_id": operation_id}, "deny, 1 execution",
+             f"{decision2}, {executions2} execution(s)",
+             status=status2, corr=corr,
+             verdict="pass" if gate_ok else "fail")
+
+    # 12.3 — terminal bound: past the reconciliation deadline with no
+    # owner response, the run is in a stated terminal state and the
+    # reservation is still held. An unanswered owner must not leave a
+    # run waiting with budget reserved indefinitely.
+    _executor_http("POST", "/__test__/executor/advance-clock",
+                   {"seconds": 60})
+    state3 = _reconciliation_state(corr)
+    if state3 is None:
+        log.inconclusive(
+            "12.3-terminal-bound",
+            "Past the deadline with no owner response, the run is in a "
+            "stated terminal state with the reservation still held",
+            {"correlation_id": corr}, "terminal, reservation held",
+            "missing fixture surface: GET /__test__/reconciliation")
+        return log.rows
+    bound_ok = (state3.get("state") == "terminal"
+                and state3.get("terminal_outcome") == "failed_unknown"
+                and state3.get("reservation_held") is True)
+    log.note("12.3-terminal-bound",
+             "Past the deadline with no owner response, the run is in a "
+             "stated terminal state with the reservation still held",
+             {"correlation_id": corr},
+             "terminal failed_unknown, reservation held",
+             f"{state3.get('state')} "
+             f"{state3.get('terminal_outcome')}, reservation_held="
+             f"{state3.get('reservation_held')}",
+             corr=corr,
+             verdict="pass" if bound_ok else "fail")
+
+    # 12.4 — terminal account: the evidence record names the dispatched
+    # effect as dispatched unknown, bound by correlation id to the
+    # pre-dispatch record and the authorizing decision. It must never
+    # be inferred as completed or cancelled.
+    evidence4 = _evidence_record(corr)
+    if evidence4 is None:
+        log.inconclusive(
+            "12.4-terminal-account",
+            "The evidence record names the dispatched effect as "
+            "dispatched unknown",
+            {"correlation_id": corr}, "dispatched_unknown",
+            "missing fixture surface: GET /__test__/evidence")
+        return log.rows
+    account = (evidence4 or {}).get("terminal_account") or []
+    entry = next((a for a in account
+                  if a.get("operation_id") == operation_id), None)
+    account_ok = bool(entry) and entry.get("outcome") == "dispatched_unknown"
+    log.note("12.4-terminal-account",
+             "The evidence record names the dispatched effect as "
+             "dispatched unknown, bound to the pre-dispatch record and "
+             "the authorizing decision",
+             {"operation_id": operation_id}, "dispatched_unknown",
+             (entry or {}).get("outcome", "no terminal-account entry"),
+             corr=corr,
+             verdict="pass" if account_ok else "fail")
+
+    # 12.5 — notification: the reconciliation owner was notified once,
+    # with the operation id and the last confirmed state. The
+    # notification is what makes the named owner real rather than a
+    # field on a record.
+    state5 = _reconciliation_state(corr)
+    notifications = (state5 or {}).get("notifications") or []
+    notified = [n for n in notifications
+                if n.get("operation_id") == operation_id]
+    notify_ok = (len(notified) == 1
+                 and bool(notified[0].get("last_confirmed_state")))
+    log.note("12.5-owner-notification",
+             "The reconciliation owner was notified once, with the "
+             "operation id and the last confirmed state",
+             {"operation_id": operation_id}, "1 notification",
+             f"{len(notified)} notification(s)",
+             corr=corr,
+             verdict="pass" if notify_ok else "fail")
+    return log.rows
+
+
 RUNNERS = {"1": run_category_1, "2": run_category_2, "3": run_category_3,
            "4": run_category_4, "5": run_category_5, "6": run_category_6,
            "7": run_category_7, "8": run_category_8, "9": run_category_9,
-           "10": run_category_10, "11": run_category_11}
+           "10": run_category_10, "11": run_category_11, "12": run_category_12}
 IMPLEMENTED = set(RUNNERS)
 # Categories implemented in code but requiring extra deployment surface.
 CATEGORY_ENV = {"11": ("MCP_GATEWAY_URL", "MCP_FIXTURE_URL"),
-                "10": ("REDTEAM_DEGRADED",)}
+                "10": ("REDTEAM_DEGRADED",),
+                "12": ("ACR_RECONCILIATION_FIXTURE",)}
 
 
 def main():
