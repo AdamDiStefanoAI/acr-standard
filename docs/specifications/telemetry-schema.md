@@ -69,6 +69,7 @@ Events are JSON objects. Field names use `snake_case`. Timestamps use ISO 8601 w
 | `duration_ms` | number | No | End-to-end duration in milliseconds. |
 | `tool_calls` | array | No | List of tool invocations (name, params summary, result summary). |
 | `error` | string | No | Error message or code if the execution failed. |
+| `outcome` | string | Conditional | Outcome of the executed effect, required for execution events that ended in failure or timeout: `completed`, `cancelled_before_dispatch`, or `dispatched_unknown`. An effect whose outcome cannot be confirmed MUST use `dispatched_unknown`. |
 
 ### Object: `policies[]`
 
@@ -111,6 +112,7 @@ Additional custom fields MAY be added under `metadata` or as top-level extension
 7. **Retention (§18):** MUST retain all ACR events at least 90 days and high-risk agent events at least 13 months.
 8. **Privacy and export (§18):** MUST apply privacy-preserving treatment to sensitive fields, document field-category treatment (plaintext, redacted, hashed, tokenized, or omitted), and provide audit-ready export without manual reconstruction from unstructured logs.
 9. **Ordering and attribution (§18):** Where records are sequenced or hash-chained, sequence MUST be assigned at decision issuance, and each decision record MUST be attributable to the action it governed through correlation linkage and its sequence position relative to that action. Persistence or export order MUST NOT redefine record order.
+10. **Terminal account (§18):** When a run fails, times out, or is paused after dispatch, the evidence record MUST include a terminal account naming every dispatched effect with its `execution.outcome`. The account MUST be bound to the pre-dispatch records and authorizing decisions by correlation linkage. An outcome of `dispatched_unknown` MUST NOT be rewritten as `completed` or `cancelled_before_dispatch` without a reconciler's confirmed provider check.
 
 ## Versioning
 

@@ -479,6 +479,15 @@ Breakdown:
 - Alert on redaction failure
 **Recovery:** Incident response, notify affected parties, strengthen policies
 
+### Effect Outcome Unknown (Worker Loss After Dispatch)
+**Symptom:** A protected effect was dispatched and the worker died, timed out, or lost contact before its outcome was confirmed
+**Impact:** The effect may or may not have taken hold (for example, a payment may or may not have settled); a retry risks a double effect and silence risks an unrecorded one
+**Mitigation:**
+- Pre-dispatch record exists before execution, so the effect is attributable even if the worker never reports back
+- Run enters waiting-for-reconciliation with its reservation held; no retry is authorized until the reconciler confirms the outcome
+- Pause enforced at the dispatch gate, not honored by the worker
+**Recovery:** Reconciler checks the provider by the original operation ID, records the outcome, and either releases the reservation or confirms the effect; the run's terminal account names the effect as completed, cancelled before dispatch, or dispatched unknown
+
 ## Evaluation Criteria
 
 An ACR-compliant Behavioral Policy Enforcement implementation should satisfy:
@@ -491,6 +500,7 @@ An ACR-compliant Behavioral Policy Enforcement implementation should satisfy:
 5. **Policy Logging:** Every policy decision recorded in audit trail
 6. **Versioned Policies:** Policies tracked with version control
 7. **Content-level defaults (spec v1.2):** Shipped default policies inspect tool-parameter content, not only tool names, and deny the three deterministic rule classes (destructive shell commands, path traversal, base64-encoded destructive payloads) at the tool-call boundary
+8. **Pre-dispatch record and dispatch-gate enforcement of pause:** Before a protected effect executes, the control plane MUST create a durable pre-dispatch record carrying the operation ID, the tool, an argument digest, the authorizing decision, and the correlation ID. The timeout and reconciliation decision for a dispatched effect MUST be owned by the coordinator or control plane, never by the worker that timed out; a worker MUST NOT authorize its own retry on the basis of its own timeout report. A pause on a run MUST be enforced at the dispatch gate: a paused run MUST NOT dispatch any further effect, and any dispatch attempt for a paused run MUST be denied and logged. A worker's own judgment about whether to honor a pause does not satisfy this requirement.
 
 ### Recommended Features
 1. **Multiple Policy Types:** Supports rule-based, schema, and ML-based policies
