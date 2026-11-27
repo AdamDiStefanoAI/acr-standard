@@ -532,10 +532,11 @@ def test_evidence_record_shape(harness, stack):
 
 
 def test_runner_and_env_gating(harness):
-    assert set(harness.RUNNERS) == {str(i) for i in range(1, 12)}
+    assert set(harness.RUNNERS) == {str(i) for i in range(1, 13)}
     assert set(harness.IMPLEMENTED) == set(harness.RUNNERS)
     assert harness.CATEGORY_ENV["10"] == ("REDTEAM_DEGRADED",)
     assert harness.CATEGORY_ENV["11"] == ("MCP_GATEWAY_URL", "MCP_FIXTURE_URL")
+    assert harness.CATEGORY_ENV["12"] == ("ACR_RECONCILIATION_FIXTURE",)
 
 
 def test_forge_jwt_shapes(harness):
